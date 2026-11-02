@@ -97,7 +97,7 @@ const SCRIPT = [
   ["See who qualifies", "orders", "On any task press 'Who can do this?'.", "\"Only people with the right skill, valid certificate, shift and no leave qualify. The others are listed with the reason. Nobody can override this.\""],
   ["Generate the schedule", "plan", "Pick a priority style and press Generate schedule.", "\"The planner assigns a person and a machine to every job and estimates when each order finishes.\""],
   ["Review, edit, lock, approve", "approval", "Edit one assignment with a reason, lock two, then Approve.", "\"The AI suggests, the manager decides. Every change needs a reason and is recorded.\""],
-  ["Someone calls in sick", "live", "Choose a person in the simulator and press Simulate.", "\"Only the affected work is replanned. Locked work is never changed silently; if it is affected, we get a clear question.\""],
+  ["Someone calls in sick", "live", "Choose a person in the simulator and press Simulate.", "\"The directly affected jobs and the jobs that wait for them are replanned. Locked work is never changed silently; if it is affected, we get a clear question.\""],
   ["The impossible case", "live", "Press 'Run the impossible case'.", "\"When no valid plan exists, the app says so and shows why. It never invents a person. Due dates and overtime cannot create a certified worker.\""],
   ["Reports", "reports", "Open Reports.", "\"Utilization, overtime, busiest machine, on-time percentage and planned vs actual.\""],
 ];
@@ -115,7 +115,7 @@ PAGES.home = async (p) => {
     { t: "Add an urgent order", d: "Type a note such as 'Needs titanium, certified inspector only'. The app adds those requirements and creates the jobs.", done: false, optional: true, btn: "Add an order", page: "orders", arg: "new" },
     { t: "Generate the AI schedule", d: "One button. The planner picks a person and a machine for every job and says why.", done: !!s.latest_version, btn: "Generate schedule", page: "plan" },
     { t: "Review and approve", d: "Change one assignment (with a reason), lock jobs you do not want touched, then approve.", done: !!s.approved_version, btn: "Review and approve", page: "approval" },
-    { t: "Handle a surprise", d: "A worker calls in sick or a machine breaks. Only the affected work is replanned and you see what changed.", done: s.revisions > 0, btn: "Try a surprise", page: "live" },
+    { t: "Handle a surprise", d: "A worker calls in sick or a machine breaks. The affected jobs and the jobs that wait for them are replanned, and you see what changed and why.", done: s.revisions > 0, btn: "Try a surprise", page: "live" },
     { t: "See the results", d: "Utilization, overtime, busiest machine, on-time delivery and planned vs actual.", done: !!s.approved_version, btn: "Open reports", page: "reports" },
   ];
   const next = steps.findIndex((x) => !x.done && !x.optional);

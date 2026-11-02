@@ -540,6 +540,10 @@ def replan(db, actor, role, event: dict) -> dict:
     conn.commit()
     conn.close()
     d = diff_versions(db, base_vid, vid)
+    for lst in (d["moved"], d["shifted"]):
+        for m in lst:
+            m["cause"] = "affected" if m["task_id"] in affected else ("follows" if m["task_id"] in movable and typ != "priority" else ("priority" if typ == "priority" else "capacity"))
+    d["by_cause"] = {k: sum(1 for m in d["moved"] + d["shifted"] if m["cause"] == k) for k in ("affected", "follows", "priority", "capacity")}
     log_action(actor, role, "replan", vid, after={"event": ev, "moved": len(d["moved"]), "shifted": len(d["shifted"])}, reason=explain, version_id=vid, db_path=db)
     add_alert("schedule_change", "warning", f"{explain} A revised plan ({vid}) is waiting for approval.", link="live", db_path=db)
     return {"result": "proposed", "event_text": explain, "version_id": vid, "base_version_id": base_vid, "diff": d, "runtime": round(res["runtime"], 2),

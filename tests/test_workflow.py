@@ -151,6 +151,13 @@ def test_absence_replan_freezes_unrelated_work(client):
             assert (b["employee_ids"], b["work_center_id"], b["start_slot"]) == (a["employee_ids"], a["work_center_id"], a["start_slot"]), f"{tid} moved but is unrelated"
         elif tid not in affected and not r.get("widened"):
             assert new[tid]["employee_ids"] == a["employee_ids"], f"{tid} follower changed person"
+    # every changed job is labelled with a cause and independent orders are identical
+    assert all(m.get("cause") for m in r["diff"]["moved"] + r["diff"]["shifted"])
+    changed_orders = {m["order_id"] for m in r["diff"]["moved"] + r["diff"]["shifted"]}
+    touched_orders = {new[t]["order_id"] for t in closure}
+    assert changed_orders <= touched_orders
+    if not r.get("widened"):
+        assert r["diff"]["by_cause"]["capacity"] == 0
     # the absent person does not work on the absent day
     day0 = min(a["start_slot"] for a in base.values()) // 96
     for a in new.values():
