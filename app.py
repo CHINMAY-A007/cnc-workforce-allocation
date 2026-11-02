@@ -190,7 +190,9 @@ async def api_solve(request: Request):
     policy = get_policy(DB)
     if data.get("weights"):
         policy["objective_weights"] = data["weights"]
-    orders = data.get("orders") or [r["id"] for r in get_conn(DB).execute("SELECT id FROM orders").fetchall()]
+    orders = data.get("orders", None)
+    if orders is None:
+        orders = [r["id"] for r in get_conn(DB).execute("SELECT id FROM orders").fetchall()]
     conn = get_conn(DB)
     conn.close()
     result = solve(DB, orders, policy, time_limit_sec=10.0)
@@ -235,6 +237,7 @@ async def api_solve(request: Request):
         "objective": result["objective"], "assignments": assignments,
         "zero_eligibility": result.get("zero_eligibility", []),
         "violations": violations, "version_id": new_vid,
+        "message": result.get("message", ""),
     }
 
 
