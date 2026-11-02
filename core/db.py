@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
-DB_PATH = os.environ.get("CNC_DB_PATH", "data/demo.db")
+DB_PATH = os.environ.get("CNC_DB_PATH", str(Path(__file__).resolve().parent.parent / "data" / "demo.db"))
 
 
 SCHEMA = r"""
@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS work_centers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     kind TEXT NOT NULL,
-    capacity INTEGER NOT NULL DEFAULT 1
+    capacity INTEGER NOT NULL DEFAULT 1,
+    down INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS maintenance (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +87,7 @@ CREATE TABLE IF NOT EXISTS orders (
     customer_commitment TEXT NOT NULL,
     notes TEXT NOT NULL DEFAULT '',
     created_by TEXT NOT NULL DEFAULT 'demo',
+    requirements TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY (product_id) REFERENCES products(id)
 );
 CREATE TABLE IF NOT EXISTS tasks (
@@ -113,6 +115,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     actual_start INTEGER,
     actual_end INTEGER,
     blocker_reason TEXT,
+    extra_skill TEXT,
+    extra_min_level INTEGER NOT NULL DEFAULT 0,
+    required_cert TEXT,
     FOREIGN KEY (order_id) REFERENCES orders(id)
 );
 CREATE TABLE IF NOT EXISTS schedule_versions (
@@ -124,7 +129,9 @@ CREATE TABLE IF NOT EXISTS schedule_versions (
     objective_value REAL NOT NULL,
     approved_by TEXT,
     approved_at TEXT,
-    notes TEXT NOT NULL DEFAULT ''
+    notes TEXT NOT NULL DEFAULT '',
+    parent_version_id TEXT,
+    label TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS version_assignments (
     version_id TEXT NOT NULL,
@@ -178,8 +185,23 @@ def get_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
     return conn
 
 
+MIGRATIONS = [
+    ("orders", "requirements", "TEXT NOT NULL DEFAULT '{}'"),
+    ("tasks", "extra_skill", "TEXT"),
+    ("tasks", "extra_min_level", "INTEGER NOT NULL DEFAULT 0"),
+    ("tasks", "required_cert", "TEXT"),
+    ("schedule_versions", "parent_version_id", "TEXT"),
+    ("schedule_versions", "label", "TEXT NOT NULL DEFAULT ''"),
+    ("work_centers", "down", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    for table, col, decl in MIGRATIONS:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     conn.commit()
 
 

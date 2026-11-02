@@ -12,7 +12,7 @@ def log_action(actor, role, action, entity, before=None, after=None, reason=None
     conn = get_conn(db_path)
     conn.execute(
         "INSERT INTO audit_log (ts,actor,role,action,entity,before_val,after_val,reason,version_id) VALUES (?,?,?,?,?,?,?,?,?)",
-        (datetime.now().isoformat(timespec="seconds"), actor, role, action, entity,
+        (datetime.now().isoformat(timespec="seconds"), actor or 'unknown', role or 'unknown', action, entity or '-',
          None if before is None else (before if isinstance(before, str) else __import__("json").dumps(before)),
          None if after is None else (after if isinstance(after, str) else __import__("json").dumps(after)),
          reason, version_id),

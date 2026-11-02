@@ -12,7 +12,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.config import DEFAULT_POLICY, save_policy
+from datetime import timedelta
+
+from core.config import DEFAULT_POLICY, save_policy, planning_start
 from core.db import DB_PATH, get_conn, init_schema, reset_demo
 from core.tasks import generate_tasks
 
@@ -41,7 +43,7 @@ ROLES = [
 # (id, name, role, team, shift, max_daily, ot_cap, active, leave_dates)
 EMPLOYEES = [
     ("E01", "Aarav Sharma", "CNC Turning Operator", "Turning", "A", 8, 2, True, []),
-    ("E02", "Priya Nair", "CNC Turning Operator", "Turning", "A", 8, 2, True, ["2026-11-04"]),
+    ("E02", "Priya Nair", "CNC Turning Operator", "Turning", "A", 8, 2, True, [1]),
     ("E03", "Rohan Iyer", "CNC Turning Operator", "Turning", "B", 8, 2, True, []),
     ("E04", "Kavya Reddy", "VMC Operator", "Milling", "A", 8, 2, True, []),
     ("E05", "Arjun Mehta", "VMC Operator", "Milling", "B", 8, 2, True, []),
@@ -83,20 +85,6 @@ SKILL_LEVELS = {
 }
 
 # certs: employee -> list (cert, expires_on)
-CERTS = {
-    "E02": [("Titanium Machining Cert", "2027-06-30"), ("CNC Turning Cert", "2026-12-31")],
-    "E05": [("VMC Operator Cert", "2026-11-15")],
-    "E07": [("5-Axis Programming Cert", "2027-03-31"), ("CMM Inspection Cert", "2026-05-01")],  # expired
-    "E08": [("5-Axis Programming Cert", "2026-12-31")],
-    "E11": [("CMM Inspection Cert", "2026-10-31")],  # expiring soon
-    "E12": [("CMM Inspection Cert", "2027-02-28")],
-    "E01": [("CNC Turning Cert", "2025-12-31")],  # expired
-    "E09": [("Setup Technician Cert", "2027-01-31")],
-    "E10": [("Setup Technician Cert", "2026-09-30")],  # expired
-    "E13": [("Deburring Cert", "2027-04-30")],
-    "E15": [("Packing Cert", "2027-08-31")],
-}
-
 WORK_CENTERS = [
     ("TC-1", "CNC Turning Center 1", "Turning"),
     ("TC-2", "CNC Turning Center 2", "Turning"),
@@ -156,89 +144,86 @@ PRODUCTS = [
     ]),
 ]
 
+# (id, product, qty, priority, due offset in days from the first planning day, status, customer)
 ORDERS = [
-    ("ORD-1001", "P-TITANIUM-SHAFT", 12, "Urgent", "2026-11-06", "Released", "Aero customer commitment"),
-    ("ORD-1002", "P-ALU-FLANGE", 40, "High", "2026-11-07", "Released", "Automotive batch"),
-    ("ORD-1003", "P-SS-BRACKET", 25, "Normal", "2026-11-08", "Released", "General engineering"),
-    ("ORD-1004", "P-BRASS-VALVE", 60, "Normal", "2026-11-05", "Released", "Valve OEM"),
-    ("ORD-1005", "P-ALLOY-GEAR", 15, "High", "2026-11-09", "Released", "Gearbox supplier"),
+    ("ORD-1001", "P-TITANIUM-SHAFT", 12, "Urgent", 3, "Released", "Aero customer commitment"),
+    ("ORD-1002", "P-ALU-FLANGE", 40, "High", 4, "Released", "Automotive batch"),
+    ("ORD-1003", "P-SS-BRACKET", 25, "Normal", 5, "Released", "General engineering"),
+    ("ORD-1004", "P-BRASS-VALVE", 60, "Normal", 2, "Released", "Valve OEM"),
+    ("ORD-1005", "P-ALLOY-GEAR", 15, "High", 6, "Released", "Gearbox supplier"),
 ]
 
+# certificate expiry as days from the first planning day (negative = already expired)
+CERT_OFFSETS = {
+    "E02": [("Titanium Machining Cert", 240), ("CNC Turning Cert", 58)],
+    "E05": [("VMC Operator Cert", 12)],
+    "E07": [("5-Axis Programming Cert", 150), ("CMM Inspection Cert", -180)],
+    "E08": [("5-Axis Programming Cert", 58)],
+    "E11": [("CMM Inspection Cert", 4)],
+    "E12": [("CMM Inspection Cert", 115)],
+    "E01": [("CNC Turning Cert", -45)],
+    "E09": [("Setup Technician Cert", 90)],
+    "E10": [("Setup Technician Cert", -30)],
+    "E13": [("Deburring Cert", 180)],
+    "E15": [("Packing Cert", 300)],
+}
 
-def seed(db_path=None):
+
+def _working_day(d, policy):
+    while d.weekday() not in policy["working_weekdays"]:
+        d += timedelta(days=1)
+    return d
+
+
+def seed(db_path=None, start=None):
+    """Create demo data. All dates are relative to the first planning day, so the demo is
+    always realistic whenever it is loaded (never in the past)."""
     conn = get_conn(db_path)
     init_schema(conn)
-    # policy
-    save_policy(conn, DEFAULT_POLICY)
-    # employees
+    policy = json.loads(json.dumps(DEFAULT_POLICY))
+    hs = start or planning_start(policy)
+    policy["horizon_start"] = hs.isoformat()
+    save_policy(conn, policy)
     for e in EMPLOYEES:
+        leave = [(hs + timedelta(days=int(x))).isoformat() for x in e[8]]
         conn.execute(
             "INSERT OR REPLACE INTO employees (id,name,role,team,shift,max_daily_hours,overtime_cap_hours,active,leave_dates) VALUES (?,?,?,?,?,?,?,?,?)",
-            (e[0], e[1], e[2], e[3], e[4], e[5], e[6], 1 if e[7] else 0, json.dumps(e[8])),
-        )
-    # skills
+            (e[0], e[1], e[2], e[3], e[4], e[5], e[6], 1 if e[7] else 0, json.dumps(leave)))
     for eid, levels in SKILL_LEVELS.items():
         for skill, lvl in levels.items():
             conn.execute("INSERT OR REPLACE INTO skills (employee_id,skill,level) VALUES (?,?,?)", (eid, skill, lvl))
-    # certs
-    for eid, clist in CERTS.items():
-        for cert, exp in clist:
-            conn.execute("INSERT OR REPLACE INTO certs (employee_id,cert,expires_on) VALUES (?,?,?)", (eid, cert, exp))
-    # work centers
+    for eid, clist in CERT_OFFSETS.items():
+        for cert, off in clist:
+            conn.execute("INSERT OR REPLACE INTO certs (employee_id,cert,expires_on) VALUES (?,?,?)",
+                         (eid, cert, (hs + timedelta(days=off)).isoformat()))
     for wc in WORK_CENTERS:
         conn.execute("INSERT OR REPLACE INTO work_centers (id,name,kind,capacity) VALUES (?,?,?,1)", wc)
-    # maintenance
     for m in MAINTENANCE:
         conn.execute("INSERT INTO maintenance (work_center_id,start_slot,end_slot,reason) VALUES (?,?,?,?)", m)
-    # products + routing
     for pid, pname, material, ops in PRODUCTS:
         conn.execute("INSERT OR REPLACE INTO products (id,name,material) VALUES (?,?,?)", (pid, pname, material))
         for op in ops:
             seq, opname, kind, dur, setup, skill, level, role, mp, qg, deps = op
             conn.execute(
                 "INSERT OR REPLACE INTO routing_ops (product_id,seq,operation,work_center_kind,duration_min,setup_min,required_skill,min_level,required_role,multi_person,is_quality_gate,depends_on) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (pid, seq, opname, kind, dur, setup, skill, level, role, mp, 1 if qg else 0, json.dumps(deps)),
-            )
-    # orders
+                (pid, seq, opname, kind, dur, setup, skill, level, role, mp, 1 if qg else 0, json.dumps(deps)))
     for o in ORDERS:
         conn.execute(
             "INSERT OR REPLACE INTO orders (id,product_id,quantity,priority,due_date,status,customer_commitment,notes,created_by) VALUES (?,?,?,?,?,?,?,?,?)",
-            (o[0], o[1], o[2], o[3], o[4], o[5], o[6], "", "demo"),
-        )
-    conn.commit()  # persist orders/routing so generate_tasks can read them
-    # generate tasks from routing for every seeded order
+            (o[0], o[1], o[2], o[3], (hs + timedelta(days=o[4])).isoformat(), o[5], o[6], "", "demo"))
+    conn.commit()
     for o in ORDERS:
         generate_tasks(o[0], db_path)
-    # requirements evidence
-    frs = [
-        ("FR-01", "Order intake", "Orders and Tasks"),
-        ("FR-02", "Task generation", "Orders and Tasks"),
-        ("FR-03", "Workforce profile", "Workforce and Skill Matrix"),
-        ("FR-04", "Eligibility validation", "Workforce and Skill Matrix"),
-        ("FR-05", "Capacity checks", "AI Allocation Proposal"),
-        ("FR-06", "Allocation optimization", "AI Allocation Proposal"),
-        ("FR-07", "Schedule generation", "Schedule Gantt"),
-        ("FR-08", "Constraint handling", "AI Allocation Proposal"),
-        ("FR-09", "Objectives", "AI Allocation Proposal"),
-        ("FR-10", "Approval and override", "Approval and Reassignment"),
-        ("FR-11", "Progress tracking", "My Tasks / Live Progress"),
-        ("FR-12", "Replanning", "Live Progress and Alerts"),
-        ("FR-13", "Alerts", "Live Progress and Alerts"),
-        ("FR-14", "Reporting", "Reports"),
-        ("FR-15", "Explanation and audit", "Audit and Settings"),
-    ]
-    for fr in frs:
-        conn.execute(
-            "INSERT OR REPLACE INTO requirements_evidence (fr_id,title,screen,status,evidence) VALUES (?,?,?,?,?)",
-            (fr[0], fr[1], fr[2], "not yet verified", ""),
-        )
+    from core.requirements import FR_TITLES
+    for fr, (title, screen) in FR_TITLES.items():
+        conn.execute("INSERT OR REPLACE INTO requirements_evidence (fr_id,title,screen,status,evidence) VALUES (?,?,?,?,?)",
+                     (fr, title, screen, "not yet verified", ""))
     conn.commit()
     conn.close()
-    print("Seeded", DB_PATH)
 
 
 if __name__ == "__main__":
     if "--reset" in sys.argv:
         reset_demo(DB_PATH)
-    seed()
-    print("Done")
+    seed(DB_PATH)
+    print("Seeded", DB_PATH)

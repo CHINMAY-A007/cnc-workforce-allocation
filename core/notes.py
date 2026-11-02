@@ -230,24 +230,39 @@ def _keyword_parse(text: str) -> Dict[str, List[str]]:
     }
 
 
-def parse_notes(text: str, use_llm: bool = True) -> Dict[str, List[str]]:
-    """Parse order notes.
+GEMINI_MAX_CALLS = int(os.environ.get("GEMINI_MAX_CALLS", "25"))  # hard cap per server run
+_gemini_calls = 0
 
-    Tries Gemini first when ``use_llm`` is true and a key is available. If the key is
-    missing or the Gemini call fails (quota, network, bad response), falls back to the
-    keyword reader so the demo never breaks. Returns a JSON-serializable dict.
+
+def gemini_enabled() -> bool:
+    """Gemini is OFF unless the owner explicitly sets GEMINI_ENABLED=1 AND a key exists."""
+    return os.environ.get("GEMINI_ENABLED", "").strip() == "1" and bool(_resolve_key())
+
+
+def note_reader_mode() -> Dict[str, object]:
+    if gemini_enabled():
+        return {"mode": "gemini", "label": "AI-assisted note reader (Gemini) with keyword fallback", "calls_left": max(0, GEMINI_MAX_CALLS - _gemini_calls)}
+    return {"mode": "keyword", "label": "Keyword note reader (free, runs locally, no AI service)", "calls_left": 0}
+
+
+def parse_notes(text: str, use_llm: bool = True) -> Dict[str, List[str]]:
+    """Parse order notes with the free keyword reader.
+
+    Gemini is used only when the owner has explicitly opted in (GEMINI_ENABLED=1 plus a key),
+    only for short notes, and never more than GEMINI_MAX_CALLS times per server run, so a
+    visitor cannot run up usage. Any failure falls back to the keyword reader.
     """
+    global _gemini_calls
+    text = (text or "")[:500]
     notice = ""
-    if use_llm:
+    if use_llm and gemini_enabled() and _gemini_calls < GEMINI_MAX_CALLS:
+        _gemini_calls += 1
         res = _gemini_parse(text)
         if res is not None:
             return res
-        notice = (
-            "Gemini key missing or call failed; using keyword reader. "
-            "Set GEMINI_API_KEY to enable AI-assisted note parsing."
-        )
+        notice = "The AI note reader did not answer, so the keyword reader was used."
     res = _keyword_parse(text)
     res["source"] = "keyword"
-    res["fallback"] = True
+    res["fallback"] = bool(notice)
     res["notice"] = notice
     return res

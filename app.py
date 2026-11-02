@@ -1,58 +1,61 @@
-"""FastAPI backend for the CNC workforce allocation demo."""
-
+"""FastAPI backend for the CNC workforce allocation demo (Simulated ERP, demo data only)."""
 from __future__ import annotations
 
 import json
 import os
-import uuid
+import shutil
+import threading
+import traceback
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from core.config import DEFAULT_POLICY
-from core.db import DB_PATH, get_conn, init_schema, is_seeded, reset_demo
-from data.seed import seed
-from core.tasks import generate_tasks, list_tasks, update_task_status
-from core.policy import get_policy, set_policy
-from core.eligibility import eligible_pairs, skill_matrix
-from core.solver import solve, validate_schedule
-from core.notes import parse_notes
+from core import service as S
+from core.alerts import list_alerts, mark_all_read, mark_read, unread_count
 from core.audit import log_action, recent
-from core.alerts import add_alert, list_alerts, unread_count, mark_read
-from core.reports import utilization_by_employee, approved_versions, planned_vs_actual, bottleneck_work_center
-from core.replan import run_replan, locked_conflicts, snapshot_assignments
-from core.requirements import list_requirements, set_status, verify_requirements
-from core.models import Task
-from core.config import resolve_horizon_start
+from core.config import (PRESETS, STATUSES, WEIGHT_LABELS, fmt_slot, get_policy, now_local, planning_start, resolve_horizon_start,
+                         set_policy, today_local, TZ_NAME)
+from core.db import DB_PATH, get_conn, init_schema, is_seeded, reset_demo
+from core.eligibility import Context, skill_matrix, task_candidates
+from core.notes import note_reader_mode, parse_notes
+from core.reports import build_report
+from core.requirements import FR_TITLES
+from core.tasks import get_task, list_tasks, update_task_status
+from data.seed import seed
 
 ROOT = Path(__file__).parent
 STATIC = ROOT / "static"
 DB = DB_PATH
 
-app = FastAPI(title="CNC Workforce Allocation Demo")
+app = FastAPI(title="CNC Workforce Allocation Demo", docs_url=None, redoc_url=None)
+
+ROLES = ["Production Manager", "Engineer/Supervisor", "Worker", "HR/Workforce Admin", "ERP Administrator"]
+PERMS = {
+    "plan": {"Production Manager", "Engineer/Supervisor"},
+    "decide": {"Production Manager"},                       # approve, reject, edit, lock, replan
+    "orders": {"Production Manager", "ERP Administrator"},
+    "workforce": {"HR/Workforce Admin", "Production Manager"},
+    "policy": {"ERP Administrator", "Production Manager"},
+    "progress": {"Production Manager", "Engineer/Supervisor", "Worker"},
+    "reset": {"Production Manager", "ERP Administrator"},
+}
+_selftest = {"state": "idle", "started": None, "results": None, "error": None}
+_lock = threading.Lock()
 
 
 def _ensure_db():
     conn = get_conn(DB)
     init_schema(conn)
-    if not is_seeded(conn):
-        conn.close()
+    ok = is_seeded(conn)
+    conn.close()
+    if not ok:
         seed(DB)
-    else:
-        conn.close()
-    # Evidence-gated requirements coverage: mark each FR verified only when its
-    # automated check passes. Runs on every startup so ticks stay current.
-    try:
-        verify_requirements(DB, route_paths=[r.path for r in app.routes])
-    except Exception:
-        # Never let requirements verification break the demo.
-        pass
 
 
 @app.on_event("startup")
@@ -60,343 +63,319 @@ def startup():
     _ensure_db()
 
 
-def _role(request: Request) -> str:
-    return request.headers.get("x-role", "Production Manager")
-
-MANAGER_ROLES = {"Production Manager", "ERP Administrator"}
-MANAGER_ENGINEER_ROLES = {"Production Manager", "Engineer/Supervisor", "ERP Administrator"}
-HR_ROLES = {"Production Manager", "HR/Workforce Admin", "ERP Administrator"}
-
-def _require_role(request: Request, allowed: set):
-    r = _role(request)
-    if r not in allowed:
-        raise HTTPException(403, f"{r} not permitted for this action")
+def role_of(request: Request) -> str:
+    r = request.headers.get("x-role", "Production Manager")
+    return r if r in ROLES else "Production Manager"
 
 
-# ---------- static frontend ----------
+def need(request: Request, perm: str) -> str:
+    r = role_of(request)
+    if r not in PERMS[perm]:
+        raise S.ApiError(f"The {r} role cannot do this in the demo. Switch role (top right) to {' or '.join(sorted(PERMS[perm]))}.", 403)
+    return r
+
+
+async def body(request: Request) -> dict:
+    try:
+        d = await request.json()
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+@app.exception_handler(S.ApiError)
+async def api_error(_r, e: S.ApiError):
+    return JSONResponse({"error": e.message, **e.extra}, status_code=e.status)
+
+
+@app.exception_handler(Exception)
+async def any_error(_r, e: Exception):
+    traceback.print_exc()
+    return JSONResponse({"error": "Something went wrong on the server. Nothing was changed. Try again; if it repeats, use Reset demo data on the Home screen.",
+                         "detail": f"{type(e).__name__}"}, status_code=500)
+
+
+app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
-# ---------- orders ----------
+# ---------- overview ----------
+@app.get("/api/state")
+def api_state(request: Request):
+    pol = get_policy(DB)
+    hs = resolve_horizon_start(pol)
+    conn = get_conn(DB)
+    n_orders = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+    n_tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    drafts = conn.execute("SELECT COUNT(*) FROM schedule_versions WHERE status='draft'").fetchone()[0]
+    appr = conn.execute("SELECT id, approved_at FROM schedule_versions WHERE status='approved' ORDER BY approved_at DESC LIMIT 1").fetchone()
+    n_rev = conn.execute("SELECT COUNT(*) FROM schedule_versions WHERE parent_version_id IS NOT NULL").fetchone()[0]
+    prog = conn.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('In Progress','Completed')").fetchone()[0]
+    conn.close()
+    return {"company": pol["company"], "orders": n_orders, "tasks": n_tasks, "drafts": drafts,
+            "approved_version": appr["id"] if appr else None, "revisions": n_rev, "progress_updates": prog,
+            "latest_version": S.latest_version_id(DB), "unread_alerts": unread_count(DB),
+            "horizon_start": hs.isoformat(), "horizon_text": hs.strftime("%a %d %b %Y"), "horizon_days": pol["horizon_days"],
+            "today": today_local().isoformat(), "timezone": TZ_NAME, "dates_stale": hs < today_local(),
+            "note_reader": note_reader_mode(), "roles": ROLES, "role": role_of(request),
+            "presets": {k: {"label": v["label"], "weights": v["weights"]} for k, v in PRESETS.items()},
+            "weight_labels": WEIGHT_LABELS, "statuses": STATUSES, "weights": pol["objective_weights"]}
+
+
+# ---------- orders & tasks ----------
 @app.get("/api/orders")
 def api_orders():
     conn = get_conn(DB)
-    orders = [dict(r) for r in conn.execute("SELECT * FROM orders ORDER BY id").fetchall()]
-    products = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM products").fetchall()}
+    orders = [dict(r) for r in conn.execute("SELECT * FROM orders ORDER BY created_by='demo' DESC, id").fetchall()]
+    prods = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM products").fetchall()}
+    counts = {r["order_id"]: r["n"] for r in conn.execute("SELECT order_id, COUNT(*) n FROM tasks GROUP BY order_id").fetchall()}
     conn.close()
     for o in orders:
-        o["product_name"] = products.get(o["product_id"], {}).get("name", o["product_id"])
+        o["product_name"] = prods.get(o["product_id"], {}).get("name", o["product_id"])
+        o["task_count"] = counts.get(o["id"], 0)
+        try:
+            o["requirements"] = json.loads(o["requirements"] or "{}")
+        except Exception:
+            o["requirements"] = {}
     return orders
 
 
 @app.post("/api/orders")
 async def api_create_order(request: Request):
-    data = await request.json()
-    oid = "ORD-" + uuid.uuid4().hex[:6].upper()
-    conn = get_conn(DB)
-    conn.execute(
-        "INSERT INTO orders (id,product_id,quantity,priority,due_date,status,customer_commitment,notes,created_by) VALUES (?,?,?,?,?,?,?,?,?)",
-        (oid, data["product_id"], int(data["quantity"]), data["priority"], data["due_date"],
-         "Released", data.get("customer_commitment", "Demo customer"), data.get("notes", ""), "demo"),
-    )
-    conn.commit()
-    conn.close()
-    parsed = None
-    if (data.get("notes") or "").strip():
-        parsed = parse_notes(data["notes"])
-    generate_tasks(oid, DB)
-    return {"order_id": oid, "parsed_notes": parsed}
+    role = need(request, "orders")
+    return S.create_order(DB, role, role, await body(request))
 
 
-@app.post("/api/orders/{oid}/tasks")
-def api_gen_tasks(oid: str):
-    generate_tasks(oid, DB)
+@app.delete("/api/orders/{oid}")
+def api_delete_order(oid: str, request: Request):
+    role = need(request, "orders")
+    S.delete_order(DB, role, role, oid)
     return {"ok": True}
+
+
+@app.get("/api/products")
+def api_products():
+    conn = get_conn(DB)
+    out = []
+    for p in conn.execute("SELECT * FROM products").fetchall():
+        ops = [dict(r) for r in conn.execute("SELECT seq, operation, work_center_kind, duration_min, required_skill, min_level, is_quality_gate, depends_on FROM routing_ops WHERE product_id=? ORDER BY seq", (p["id"],)).fetchall()]
+        out.append({**dict(p), "routing": ops})
+    conn.close()
+    return out
 
 
 @app.get("/api/tasks")
 def api_tasks(order_id: str = None):
-    tasks = list_tasks(order_id, DB)
-    return [t.__dict__ for t in tasks]
+    ctx = Context(DB)
+    out = []
+    for t in list_tasks(order_id, DB):
+        t["planned_start_text"] = fmt_slot(t["planned_start"], ctx.hs) if t["planned_start"] is not None else None
+        t["planned_end_text"] = fmt_slot(t["planned_end"], ctx.hs) if t["planned_end"] is not None else None
+        t["employees"] = [ctx.emps[e]["name"] for e in t["employee_ids"] if e in ctx.emps]
+        out.append(t)
+    return out
+
+
+@app.get("/api/tasks/worker/{emp_id}")
+def api_worker_tasks(emp_id: str):
+    ctx = Context(DB)
+    if emp_id not in ctx.emps:
+        raise S.ApiError("Unknown employee.", 404)
+    vid = S.latest_version_id(DB, "approved")
+    items = []
+    if vid:
+        det = S.enrich(DB, vid)
+        for a in det["assignments"]:
+            if emp_id in a["employee_ids"]:
+                conn = get_conn(DB)
+                t = dict(conn.execute("SELECT * FROM tasks WHERE id=?", (a["task_id"],)).fetchone())
+                conn.close()
+                items.append({"task_id": a["task_id"], "task_name": a["task_name"], "order_id": a["order_id"], "start_text": a["start_text"],
+                              "end_text": a["end_text"], "work_center": a["work_center_name"], "with": [e["name"] for e in a["employees"] if e["id"] != emp_id],
+                              "status": t["status"], "actual_start": t["actual_start"], "actual_end": t["actual_end"], "blocker": t["blocker_reason"],
+                              "locked": a["locked"], "priority": a["priority"], "start_slot": a["start_slot"]})
+    return {"employee": {"id": emp_id, "name": ctx.emps[emp_id]["name"], "shift": ctx.emps[emp_id]["shift"], "role": ctx.emps[emp_id]["role"]},
+            "approved_version": vid, "tasks": items}
 
 
 @app.post("/api/tasks/{tid}/status")
 async def api_task_status(tid: str, request: Request):
-    data = await request.json()
-    update_task_status(tid, data["status"], data.get("actual_start"), data.get("actual_end"), data.get("blocker"), DB)
+    role = need(request, "progress")
+    d = await body(request)
+    status = d.get("status")
+    if status not in STATUSES:
+        raise S.ApiError("Unknown status.")
+    if status == "Blocked" and not (d.get("blocker") or "").strip():
+        raise S.ApiError("Please say what is blocking the job.")
+    t = get_task(tid, DB)
+    if not t:
+        raise S.ApiError("Task not found.", 404)
+    before = t["status"]
+    update_task_status(tid, status, (d.get("blocker") or "").strip() or None, DB)
+    log_action(d.get("actor") or role, role, "task_status", tid, before=before, after=status, reason=(d.get("blocker") or "").strip() or "progress update", db_path=DB)
+    if status == "Blocked":
+        from core.alerts import add_alert
+        add_alert("blocked", "warning", f"{t['name']} ({t['order_id']}) is blocked: {(d.get('blocker') or '').strip()}", link="live", db_path=DB)
     return {"ok": True}
 
 
 # ---------- workforce ----------
 @app.get("/api/workforce")
 def api_workforce():
+    return skill_matrix(DB)
+
+
+@app.post("/api/employees/{eid}")
+async def api_employee_update(eid: str, request: Request):
+    role = need(request, "workforce")
+    d = await body(request)
     conn = get_conn(DB)
-    emps = [dict(r) for r in conn.execute("SELECT * FROM employees ORDER BY id").fetchall()]
+    e = conn.execute("SELECT * FROM employees WHERE id=?", (eid,)).fetchone()
+    if not e:
+        conn.close()
+        raise S.ApiError("Unknown employee.", 404)
+    changes = {}
+    if "active" in d:
+        conn.execute("UPDATE employees SET active=? WHERE id=?", (1 if d["active"] else 0, eid))
+        changes["active"] = bool(d["active"])
+    if "leave_dates" in d:
+        ld = sorted({x for x in d["leave_dates"] if datetime.strptime(x, "%Y-%m-%d")})
+        conn.execute("UPDATE employees SET leave_dates=? WHERE id=?", (json.dumps(ld), eid))
+        changes["leave_dates"] = ld
+    if "skill" in d and "level" in d:
+        lvl = int(d["level"])
+        if not 0 <= lvl <= 5:
+            conn.close()
+            raise S.ApiError("Skill level must be 0 to 5.")
+        if lvl == 0:
+            conn.execute("DELETE FROM skills WHERE employee_id=? AND skill=?", (eid, d["skill"]))
+        else:
+            conn.execute("INSERT OR REPLACE INTO skills (employee_id,skill,level) VALUES (?,?,?)", (eid, d["skill"], lvl))
+        changes["skill"] = {d["skill"]: lvl}
+    conn.commit()
     conn.close()
-    return emps
-
-
-@app.get("/api/skills")
-def api_skills():
-    emps, skills, matrix, cert_flags = skill_matrix(DB)
-    return {"employees": [dict(e) for e in emps], "skills": skills, "matrix": matrix, "cert_flags": {k: v for k, v in cert_flags.items()}}
+    log_action(role, role, "workforce_update", eid, before=None, after=changes, reason=d.get("reason") or "HR update", db_path=DB)
+    return {"ok": True}
 
 
 @app.get("/api/eligibility/{task_id}")
-def api_eligibility(task_id: str):
-    conn = get_conn(DB)
-    trow = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-    conn.close()
-    if not trow:
-        raise HTTPException(404, "task not found")
-    task = Task(
-        id=trow["id"], order_id=trow["order_id"], seq=trow["seq"], name=trow["name"],
-        duration_min=trow["duration_min"], required_skill=trow["required_skill"],
-        min_level=trow["min_level"], required_role=trow["required_role"],
-        work_center_kind=trow["work_center_kind"], multi_person=trow["multi_person"],
-        is_quality_gate=bool(trow["is_quality_gate"]), depends_on=json.loads(trow["depends_on"] or "[]"),
-    )
-    policy = get_policy(DB)
-    er = eligible_pairs(task, policy, DB)
-    return {"candidates": er.candidates, "excluded": er.excluded}
+def api_eligibility(task_id: str, day: int = None):
+    t = get_task(task_id, DB)
+    if not t:
+        raise S.ApiError("Task not found.", 404)
+    ctx = Context(DB)
+    if day is None:
+        day = (t["planned_start"] // 96) if t.get("planned_start") is not None else 0
+    c = task_candidates(t, ctx.day(day), ctx)
+    return {"task": {"id": t["id"], "name": t["name"], "order_id": t["order_id"], "required_skill": t["required_skill"], "min_level": t["min_level"],
+                     "required_role": t["required_role"], "extra_skill": t.get("extra_skill"), "required_cert": t.get("required_cert")},
+            "day_text": ctx.day(day).strftime("%a %d %b"), **c}
 
 
-# ---------- products ----------
-@app.get("/api/products")
-def api_products():
-    conn = get_conn(DB)
-    prods = [dict(r) for r in conn.execute("SELECT * FROM products").fetchall()]
-    conn.close()
-    return prods
-
-
-# ---------- parse notes ----------
 @app.get("/api/parse-notes")
 def api_parse_notes(text: str = ""):
-    return parse_notes(text)
+    return parse_notes(text[:500])
 
 
-# ---------- solve ----------
-@app.post("/api/solve")
-async def api_solve(request: Request):
-    _require_role(request, MANAGER_ENGINEER_ROLES)
-    data = await request.json()
-    policy = get_policy(DB)
-    if data.get("weights"):
-        policy["objective_weights"] = data["weights"]
-    orders = data.get("orders", None)
-    if orders is None:
-        orders = [r["id"] for r in get_conn(DB).execute("SELECT id FROM orders").fetchall()]
+# ---------- planning ----------
+@app.post("/api/plan")
+async def api_plan(request: Request):
+    role = need(request, "plan")
+    d = await body(request)
+    w = d.get("weights")
+    if w:
+        w = {k: float(v) for k, v in w.items() if k in WEIGHT_LABELS}
+    return S.plan(DB, role, role, order_ids=d.get("orders"), weights=w, preset=d.get("preset"))
+
+
+@app.get("/api/versions")
+def api_versions():
     conn = get_conn(DB)
-    conn.close()
-    result = solve(DB, orders, policy, time_limit_sec=10.0)
-    assignments = []
-    for a in result["assignments"]:
-        assignments.append({
-            "task_id": a.task_id, "employee_ids": a.employee_ids,
-            "work_center_id": a.work_center_id, "start_slot": a.start_slot,
-            "end_slot": a.end_slot, "locked": a.locked, "why": a.why,
-        })
-    # create draft version if feasible
-    new_vid = None
-    if result["status"] in ("OPTIMAL", "FEASIBLE"):
-        new_vid = "V-" + uuid.uuid4().hex[:8].upper()
-        conn = get_conn(DB)
-        conn.execute(
-            "INSERT INTO schedule_versions (id,created_at,status,solver_status,solver_runtime_sec,objective_value,notes) VALUES (?,?,?,?,?,?,?)",
-            (new_vid, datetime.now().isoformat(timespec="seconds"), "draft", result["status"], result["runtime"], result["objective"] or 0.0, "AI proposal"),
-        )
-        for a in result["assignments"]:
-            conn.execute(
-                "INSERT INTO version_assignments (version_id,task_id,employee_ids,work_center_id,start_slot,end_slot,locked,why) VALUES (?,?,?,?,?,?,?,?)",
-                (new_vid, a.task_id, json.dumps(a.employee_ids), a.work_center_id, a.start_slot, a.end_slot, 1 if a.locked else 0, json.dumps(a.why)),
-            )
-        for a in result["assignments"]:
-            conn.execute("UPDATE tasks SET planned_start=?, planned_end=?, employee_ids=?, work_center_id=?, locked=? WHERE id=?",
-                         (a.start_slot, a.end_slot, json.dumps(a.employee_ids), a.work_center_id, 1 if a.locked else 0, a.task_id))
-        conn.commit()
-        conn.close()
-        add_alert("schedule", "info", f"New AI proposal {new_vid} generated.")
-        log_action(_role(request), _role(request), "generate_schedule", new_vid, before=None, after={"status": result["status"]}, reason="AI proposal", version_id=new_vid, db_path=DB)
-    # validation
-    violations = []
-    if result["status"] in ("OPTIMAL", "FEASIBLE"):
-        tasks = []
-        for oid in orders:
-            tasks += list_tasks(oid, DB)
-        tdicts = [t.__dict__ for t in tasks]
-        violations = validate_schedule(result["assignments"], tdicts, policy, DB)
-    return {
-        "status": result["status"], "runtime": result["runtime"],
-        "objective": result["objective"], "assignments": assignments,
-        "zero_eligibility": result.get("zero_eligibility", []),
-        "violations": violations, "version_id": new_vid,
-        "message": result.get("message", ""),
-    }
-
-
-# ---------- schedule ----------
-@app.get("/api/schedules")
-def api_schedules():
-    conn = get_conn(DB)
-    rows = [dict(r) for r in conn.execute("SELECT * FROM schedule_versions ORDER BY created_at DESC").fetchall()]
+    rows = [dict(r) for r in conn.execute("SELECT id, created_at, status, solver_status, label, approved_by, approved_at, parent_version_id FROM schedule_versions ORDER BY created_at DESC, rowid DESC").fetchall()]
     conn.close()
     return rows
 
 
-@app.get("/api/schedule/{vid}")
-def api_schedule(vid: str):
-    conn = get_conn(DB)
-    assigns = [dict(r) for r in conn.execute("SELECT * FROM version_assignments WHERE version_id=?", (vid,)).fetchall()]
-    conn.close()
-    return assigns
+@app.get("/api/version/{vid}")
+def api_version(vid: str):
+    return S.enrich(DB, vid)
 
 
-# ---------- approval ----------
+@app.get("/api/version/{vid}/candidates/{task_id}")
+def api_candidates(vid: str, task_id: str):
+    return S.candidates_for(DB, vid, task_id)
+
+
 @app.post("/api/reassign")
 async def api_reassign(request: Request):
-    _require_role(request, MANAGER_ROLES)
-    data = await request.json()
-    vid = data["version_id"]; tid = data["task_id"]; new_emp = data["employee_id"]; reason = data.get("reason", "")
-    if not reason.strip():
-        raise HTTPException(400, "reason required")
-    conn = get_conn(DB)
-    a = conn.execute("SELECT employee_ids FROM version_assignments WHERE version_id=? AND task_id=?", (vid, tid)).fetchone()
-    before = a["employee_ids"] if a else None
-    conn.execute("UPDATE version_assignments SET employee_ids=? WHERE version_id=? AND task_id=?", (json.dumps([new_emp]), vid, tid))
-    conn.execute("UPDATE tasks SET employee_ids=? WHERE id=?", (json.dumps([new_emp]), tid))
-    conn.commit()
-    conn.close()
-    log_action(_role(request), _role(request), "reassign", tid, before=before, after=[new_emp], reason=reason, version_id=vid, db_path=DB)
-    add_alert("reassignment", "warning", f"Task {tid} reassigned: {reason}")
-    return {"ok": True}
+    role = need(request, "decide")
+    d = await body(request)
+    S.reassign(DB, role, role, d.get("version_id"), d.get("task_id"), d.get("employee_ids") or [], d.get("reason", ""))
+    return S.enrich(DB, d["version_id"])
 
 
 @app.post("/api/lock")
 async def api_lock(request: Request):
-    _require_role(request, MANAGER_ROLES)
-    data = await request.json()
-    vid = data["version_id"]; tid = data["task_id"]
-    conn = get_conn(DB)
-    conn.execute("UPDATE version_assignments SET locked=1 WHERE version_id=? AND task_id=?", (vid, tid))
-    conn.execute("UPDATE tasks SET locked=1 WHERE id=?", (tid,))
-    conn.commit()
-    conn.close()
-    log_action(_role(request), _role(request), "lock", tid, before=False, after=True, reason=data.get("reason", "locked"), version_id=vid, db_path=DB)
+    role = need(request, "decide")
+    d = await body(request)
+    S.set_lock(DB, role, role, d.get("version_id"), d.get("task_id"), True, d.get("reason", ""))
     return {"ok": True}
 
 
 @app.post("/api/unlock")
 async def api_unlock(request: Request):
-    _require_role(request, MANAGER_ROLES)
-    data = await request.json()
-    vid = data["version_id"]; tid = data["task_id"]
-    conn = get_conn(DB)
-    conn.execute("UPDATE version_assignments SET locked=0 WHERE version_id=? AND task_id=?", (vid, tid))
-    conn.execute("UPDATE tasks SET locked=0 WHERE id=?", (tid,))
-    conn.commit()
-    conn.close()
-    log_action(role, role, "unlock", tid, before=True, after=False, reason=data.get("reason", "unlocked"), version_id=vid, db_path=DB)
+    role = need(request, "decide")
+    d = await body(request)
+    S.set_lock(DB, role, role, d.get("version_id"), d.get("task_id"), False, d.get("reason", ""))
     return {"ok": True}
 
 
 @app.post("/api/approve")
 async def api_approve(request: Request):
-    _require_role(request, MANAGER_ROLES)
-    data = await request.json()
-    vid = data["version_id"]
-    role = _role(request)
-    conn = get_conn(DB)
-    conn.execute("UPDATE schedule_versions SET status='approved', approved_by=?, approved_at=? WHERE id=?",
-                 (role, datetime.now().isoformat(timespec="seconds"), vid))
-    conn.execute("UPDATE schedule_versions SET status='superseded' WHERE status='approved' AND id<>?", (vid,))
-    conn.commit()
-    conn.close()
-    log_action(role, role, "approve_schedule", vid, before="draft", after="approved", reason="manager approval", version_id=vid, db_path=DB)
-    add_alert("approval", "info", f"Schedule {vid} approved.")
-    return {"ok": True}
+    role = need(request, "decide")
+    d = await body(request)
+    S.approve(DB, role, role, d.get("version_id"))
+    return {"ok": True, "version_id": d.get("version_id")}
 
 
 @app.post("/api/reject")
 async def api_reject(request: Request):
-    _require_role(request, MANAGER_ROLES)
-    data = await request.json()
-    vid = data["version_id"]; reason = data.get("reason", "rejected")
-    conn = get_conn(DB)
-    conn.execute("UPDATE schedule_versions SET status='rejected', notes=? WHERE id=?", (reason, vid))
-    conn.commit()
-    conn.close()
-    log_action(_role(request), _role(request), "reject_schedule", vid, before="draft", after="rejected", reason=reason, version_id=vid, db_path=DB)
+    role = need(request, "decide")
+    d = await body(request)
+    S.reject(DB, role, role, d.get("version_id"), d.get("reason", ""))
     return {"ok": True}
 
 
-# ---------- replan ----------
 @app.post("/api/replan")
 async def api_replan(request: Request):
-    _require_role(request, MANAGER_ROLES)
-    data = await request.json()
-    event = data["event"]
-    policy = get_policy(DB)
-    # impossible case: deactivate 5-axis staff
-    if event.get("type") == "impossible":
-        conn = get_conn(DB)
-        conn.execute("UPDATE employees SET active=0 WHERE id IN ('E07','E08')")
-        conn.commit()
-        conn.close()
-        orders = [r["id"] for r in get_conn(DB).execute("SELECT id FROM orders").fetchall()]
-        result = solve(DB, orders, policy, time_limit_sec=5.0)
-        conn = get_conn(DB)
-        conn.execute("UPDATE employees SET active=1 WHERE id IN ('E07','E08')")
-        conn.commit()
-        conn.close()
-        return {"status": result["status"], "zero_eligibility": result.get("zero_eligibility", []),
-                "message": "No assignment invented. Options: extend due date, overtime within caps, reschedule maintenance."}
-    conn = get_conn(DB)
-    versions = [r["id"] for r in conn.execute("SELECT id FROM schedule_versions ORDER BY created_at DESC").fetchall()]
-    conn.close()
-    current_vid = versions[0] if versions else None
-    if not current_vid:
-        raise HTTPException(400, "no schedule")
-    # locked conflicts
-    from core.replan import locked_conflicts
-    cf = locked_conflicts(current_vid, event, DB)
-    if cf:
-        return {"conflicts": cf, "requires_unlock": True}
-    res = run_replan(current_vid, event, policy, DB, actor=_role(request), role=_role(request))
-    return res
+    role = need(request, "decide")
+    d = await body(request)
+    return S.replan(DB, role, role, d.get("event") or {})
 
 
-# ---------- reports ----------
-@app.get("/api/reports/utilization")
-def api_util():
-    return utilization_by_employee(DB)
-
-
-@app.get("/api/reports/bottleneck")
-def api_bn():
-    bn = bottleneck_work_center(db_path=DB)
-    return {"work_center": bn[0] if bn else None, "hours": bn[1] if bn else 0}
-
-
-@app.get("/api/reports/planned-vs-actual")
-def api_pva():
-    return planned_vs_actual(DB)
+# ---------- reports, audit, alerts ----------
+@app.get("/api/reports")
+def api_reports():
+    return build_report(DB)
 
 
 @app.get("/api/audit")
 def api_audit():
-    return recent(50, DB)
+    return recent(200, DB)
 
 
 @app.get("/api/alerts")
 def api_alerts():
-    return {"count": unread_count(DB), "items": list_alerts(DB)}
+    return {"count": unread_count(DB), "items": list_alerts(False, DB)}
 
 
 @app.post("/api/alerts/{aid}/read")
@@ -405,32 +384,48 @@ def api_alert_read(aid: int):
     return {"ok": True}
 
 
+@app.post("/api/alerts/read-all")
+def api_alert_read_all():
+    mark_all_read(DB)
+    return {"ok": True}
+
+
+# ---------- requirements ----------
 @app.get("/api/requirements")
 def api_reqs():
-    return list_requirements(DB)
+    conn = get_conn(DB)
+    rows = [dict(r) for r in conn.execute("SELECT * FROM requirements_evidence ORDER BY fr_id").fetchall()]
+    conn.close()
+    return {"items": rows, "selftest": {k: _selftest[k] for k in ("state", "started", "error")}}
 
 
-@app.post("/api/requirements/{fr_id}/status")
-async def api_req_status(fr_id: str, request: Request):
-    """Save/override the evidence status for a single FR (e.g. from a 'Show me' review)."""
-    data = await request.json()
-    status = str(data.get("status", "verified")).strip() or "verified"
-    evidence = str(data.get("evidence", ""))
-    set_status(fr_id, status, evidence, DB)
-    log_action(_role(request), _role(request), "requirement_status", fr_id,
-               before=None, after={"status": status, "evidence": evidence}, reason="evidence update", db_path=DB)
-    return {"ok": True, "fr_id": fr_id, "status": status, "evidence": evidence}
+def _run_selftest():
+    from core.selftest import run_all
+    try:
+        res = run_all()
+        conn = get_conn(DB)
+        for fr, r in res.items():
+            conn.execute("UPDATE requirements_evidence SET status=?, evidence=? WHERE fr_id=?",
+                         ("verified" if r["ok"] else "check failed", r["evidence"], fr))
+        conn.commit()
+        conn.close()
+        _selftest.update(state="done", results=res, error=None)
+    except Exception as e:  # never break the demo
+        traceback.print_exc()
+        _selftest.update(state="error", error=f"{type(e).__name__}: {e}")
 
 
 @app.post("/api/requirements/verify")
 def api_req_verify(request: Request):
-    """Re-run every automated FR check and persist evidence-gated statuses."""
-    results = verify_requirements(DB, route_paths=[r.path for r in app.routes])
-    log_action(_role(request), _role(request), "requirements_verify", "all",
-               before=None, after={k: v["status"] for k, v in results.items()}, reason="re-verified all FRs", db_path=DB)
-    return {"ok": True, "results": results}
+    with _lock:
+        if _selftest["state"] == "running":
+            return {"state": "running"}
+        _selftest.update(state="running", started=now_local().isoformat(timespec="seconds"), error=None)
+    threading.Thread(target=_run_selftest, daemon=True).start()
+    return {"state": "running"}
 
 
+# ---------- settings ----------
 @app.get("/api/policy")
 def api_policy_get():
     return get_policy(DB)
@@ -438,23 +433,63 @@ def api_policy_get():
 
 @app.post("/api/policy")
 async def api_policy_set(request: Request):
-    _require_role(request, HR_ROLES)
-    data = await request.json()
-    set_policy(data, DB)
-    log_action(_role(request), _role(request), "policy_update", "policy", before=None, after=data, reason="settings", db_path=DB)
+    role = need(request, "policy")
+    d = await body(request)
+    cur = get_policy(DB)
+    new = {}
+    if "objective_weights" in d:
+        w = d["objective_weights"]
+        new["objective_weights"] = {k: max(0.0, float(w[k])) for k in WEIGHT_LABELS if k in w}
+    if "overtime_cap_hours" in d:
+        v = float(d["overtime_cap_hours"])
+        if not 0 <= v <= 4:
+            raise S.ApiError("Overtime cap must be between 0 and 4 hours.")
+        new["overtime_cap_hours"] = v
+    if "working_weekdays" in d:
+        wd = sorted({int(x) for x in d["working_weekdays"] if 0 <= int(x) <= 6})
+        if not wd:
+            raise S.ApiError("Pick at least one working day.")
+        new["working_weekdays"] = wd
+    if "shifts" in d:
+        for k, v in d["shifts"].items():
+            datetime.strptime(v["start"], "%H:%M"); datetime.strptime(v["end"], "%H:%M")
+        new["shifts"] = d["shifts"]
+    if not new:
+        raise S.ApiError("Nothing to change.")
+    set_policy(new, DB)
+    log_action(role, role, "policy_update", "policy", before={k: cur.get(k) for k in new}, after=new, reason=d.get("reason") or "settings change", db_path=DB)
     return {"ok": True}
+
+
+@app.get("/api/export")
+def api_export():
+    conn = get_conn(DB)
+    out = {}
+    for t in ("policy", "employees", "skills", "certs", "work_centers", "maintenance", "products", "routing_ops", "orders", "tasks",
+              "schedule_versions", "version_assignments", "audit_log", "alerts"):
+        out[t] = [dict(r) for r in conn.execute(f"SELECT * FROM {t}").fetchall()]
+    conn.close()
+    return JSONResponse(out, headers={"Content-Disposition": f"attachment; filename=cnc-demo-backup-{now_local():%Y%m%d-%H%M}.json"})
 
 
 @app.post("/api/reset")
-def api_reset():
+async def api_reset(request: Request):
+    role = need(request, "reset")
+    d = await body(request)
+    if d.get("confirm") != "RESET":
+        raise S.ApiError("Reset needs an explicit confirmation. Nothing was changed.")
+    backups = Path(DB).parent / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    stamp = now_local().strftime("%Y%m%d-%H%M%S")
+    if Path(DB).exists():
+        shutil.copy(DB, backups / f"demo-{stamp}.db")
     reset_demo(DB)
     seed(DB)
-    return {"ok": True}
+    log_action(role, role, "reset_demo", "demo data", reason=f"reset with backup demo-{stamp}.db", db_path=DB)
+    return {"ok": True, "backup": f"demo-{stamp}.db"}
 
 
-# ---------- gantt helper: slot->iso ----------
 @app.get("/api/meta")
 def api_meta():
-    policy = get_policy(DB)
-    hs = resolve_horizon_start(policy)
-    return {"horizon_start": hs.isoformat(), "slot_minutes": 15}
+    pol = get_policy(DB)
+    return {"horizon_start": resolve_horizon_start(pol).isoformat(), "slot_minutes": 15}
