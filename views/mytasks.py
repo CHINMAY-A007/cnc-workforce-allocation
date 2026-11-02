@@ -20,8 +20,17 @@ def render():
     conn.close()
     eid = st.selectbox("Employee", [e["id"] for e in emps], format_func=lambda x: next(e["name"] for e in emps if e["id"] == x))
     conn = get_conn(DB_PATH)
-    rows = conn.execute("SELECT * FROM tasks WHERE employee_ids LIKE ?", (f"%{eid}%",)).fetchall()
+    rows = conn.execute("SELECT * FROM tasks").fetchall()
     conn.close()
+    filtered = []
+    for r in rows:
+        try:
+            ids = json.loads(r["employee_ids"] or "[]")
+        except Exception:
+            ids = []
+        if eid in ids:
+            filtered.append(r)
+    rows = filtered
     tasks = [dict(r) for r in rows]
     if not tasks:
         st.info("No tasks assigned.")

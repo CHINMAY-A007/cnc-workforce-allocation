@@ -36,16 +36,22 @@ def render():
     for title, desc, page in steps:
         with st.container(border=True):
             c1, c2 = st.columns([4, 1])
-            c1.markdown(f"**{title}** - {desc}")
-            c2.caption(f"Go to: {page}")
+            c1.markdown(f"**{title}**")
+            c1.caption(desc)
+            if c2.button("Open", key=f"go_{title}"):
+                st.session_state.nav_target = page
+                st.rerun()
 
     st.divider()
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     if c1.button("Load demo data / Reset demo", type="primary"):
         reset_demo(DB_PATH)
         seed(DB_PATH)
         st.success("Demo data reset.")
         st.rerun()
-    if c2.button("Open Orders and Tasks"):
+    if c2.button("Open Orders"):
         st.session_state.nav_target = "Orders and Tasks"
+        st.rerun()
+    if c3.button("Open Allocation"):
+        st.session_state.nav_target = "AI Allocation Proposal"
         st.rerun()

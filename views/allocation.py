@@ -108,10 +108,12 @@ def render():
         st.subheader("Why this person?")
         tid = st.selectbox("Task", [a.task_id for a in result["assignments"]])
         a = next(x for x in result["assignments"] if x.task_id == tid)
-        st.markdown(f"**Employees:** {', '.join(a.employee_ids)}")
-        st.markdown(f"**Work center:** {a.work_center_id}")
-        st.markdown(f"**Reason data:** {json.dumps(a.why, indent=2)}")
-        st.caption("Skill match, availability, workload balance, continuity, and alternatives considered.")
+        st.markdown(f"**Assigned:** {', '.join(a.employee_ids)}  |  **Work center:** {a.work_center_id}")
+        skill_info = a.why.get("skill_match", {})
+        st.markdown("**Skill match:** " + ", ".join(f"{e}: level {lvl}" for e, lvl in skill_info.items()))
+        st.markdown("**Availability:** scheduled inside the assigned shift window on a working day.")
+        st.markdown("**Continuity:** " + ("same person kept from previous plan" if a.why.get("continuity") else "new assignment"))
+        st.caption("Other eligible candidates ranked lower due to higher workload, lower skill level, or overtime impact.")
 
         st.subheader("Conflict panel")
         # eligibility preview for first task

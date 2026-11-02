@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import streamlit as st
 
-from ui.components import sidebar_role_switcher
+from ui.components import sidebar_role_switcher, inject_css
 
 st.set_page_config(page_title="CNC Workforce Allocation (Demo)", layout="wide")
+inject_css()
 
 role = sidebar_role_switcher()
 
@@ -39,4 +40,12 @@ ALL_PAGES = [
 visible = [p for p in ALL_PAGES if role in p[2]]
 pages = [st.Page(p[1].render, title=p[0], url_path=p[0].lower().replace(" ", "-").replace("/", "")) for p in visible]
 nav = st.navigation(pages)
+
+# Handle in-app navigation requests
+target = st.session_state.pop("nav_target", None)
+if target:
+    for pg in pages:
+        if pg.title == target:
+            st.switch_page(pg)
+
 nav.run()
