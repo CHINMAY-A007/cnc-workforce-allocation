@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.config import DEFAULT_POLICY, save_policy
 from core.db import DB_PATH, get_conn, init_schema, reset_demo
+from core.tasks import generate_tasks
 
 SKILLS = [
     "CNC Turning",
@@ -204,6 +205,10 @@ def seed(db_path=None):
             "INSERT OR REPLACE INTO orders (id,product_id,quantity,priority,due_date,status,customer_commitment,notes,created_by) VALUES (?,?,?,?,?,?,?,?,?)",
             (o[0], o[1], o[2], o[3], o[4], o[5], o[6], "", "demo"),
         )
+    conn.commit()  # persist orders/routing so generate_tasks can read them
+    # generate tasks from routing for every seeded order
+    for o in ORDERS:
+        generate_tasks(o[0], db_path)
     # requirements evidence
     frs = [
         ("FR-01", "Order intake", "Orders and Tasks"),

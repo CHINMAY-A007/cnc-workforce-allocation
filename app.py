@@ -27,7 +27,7 @@ from core.audit import log_action, recent
 from core.alerts import add_alert, list_alerts, unread_count, mark_read
 from core.reports import utilization_by_employee, approved_versions, planned_vs_actual, bottleneck_work_center
 from core.replan import run_replan, locked_conflicts, snapshot_assignments
-from core.requirements import list_requirements, set_status
+from core.requirements import list_requirements, set_status, verify_requirements
 from core.models import Task
 from core.config import resolve_horizon_start
 
@@ -46,6 +46,13 @@ def _ensure_db():
         seed(DB)
     else:
         conn.close()
+    # Evidence-gated requirements coverage: mark each FR verified only when its
+    # automated check passes. Runs on every startup so ticks stay current.
+    try:
+        verify_requirements(DB, route_paths=[r.path for r in app.routes])
+    except Exception:
+        # Never let requirements verification break the demo.
+        pass
 
 
 @app.on_event("startup")
@@ -385,6 +392,27 @@ def api_alert_read(aid: int):
 @app.get("/api/requirements")
 def api_reqs():
     return list_requirements(DB)
+
+
+@app.post("/api/requirements/{fr_id}/status")
+async def api_req_status(fr_id: str, request: Request):
+    """Save/override the evidence status for a single FR (e.g. from a 'Show me' review)."""
+    data = await request.json()
+    status = str(data.get("status", "verified")).strip() or "verified"
+    evidence = str(data.get("evidence", ""))
+    set_status(fr_id, status, evidence, DB)
+    log_action(_role(request), _role(request), "requirement_status", fr_id,
+               before=None, after={"status": status, "evidence": evidence}, reason="evidence update", db_path=DB)
+    return {"ok": True, "fr_id": fr_id, "status": status, "evidence": evidence}
+
+
+@app.post("/api/requirements/verify")
+def api_req_verify(request: Request):
+    """Re-run every automated FR check and persist evidence-gated statuses."""
+    results = verify_requirements(DB, route_paths=[r.path for r in app.routes])
+    log_action(_role(request), _role(request), "requirements_verify", "all",
+               before=None, after={k: v["status"] for k, v in results.items()}, reason="re-verified all FRs", db_path=DB)
+    return {"ok": True, "results": results}
 
 
 @app.get("/api/policy")

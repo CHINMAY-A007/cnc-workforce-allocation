@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import List
+from typing import List, Optional
 
 from core.config import SLOTS_PER_HOUR
 from core.db import get_conn
@@ -160,3 +160,30 @@ def update_task_status(task_id, status, actual_start=None, actual_end=None, bloc
     )
     conn.commit()
     conn.close()
+
+
+def count_tasks(order_id: Optional[str] = None, db_path=None) -> int:
+    """Count tasks, optionally scoped to a single order."""
+    conn = get_conn(db_path)
+    if order_id:
+        n = conn.execute("SELECT COUNT(*) FROM tasks WHERE order_id=?", (order_id,)).fetchone()[0]
+    else:
+        n = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    conn.close()
+    return int(n)
+
+
+def count_tasks_by_order(db_path=None) -> dict:
+    """Return {order_id: task_count} for every order that has tasks."""
+    conn = get_conn(db_path)
+    rows = conn.execute("SELECT order_id, COUNT(*) AS n FROM tasks GROUP BY order_id").fetchall()
+    conn.close()
+    return {r["order_id"]: int(r["n"]) for r in rows}
+
+
+def any_tasks_exist(db_path=None) -> bool:
+    """True if at least one task row exists anywhere (used for empty-checks)."""
+    conn = get_conn(db_path)
+    n = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    conn.close()
+    return n > 0

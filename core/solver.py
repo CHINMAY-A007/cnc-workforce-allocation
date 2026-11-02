@@ -120,6 +120,19 @@ def _eligible_options(task, policy, emps, skills, certs, wcs, task_date):
 def solve(db_path, order_ids, policy, locked: Optional[Dict[str, Dict[str, Any]]] = None, time_limit_sec: float = 10.0):
     locked = locked or {}
     tasks, orders, wcs, maint_by_wc, emps, skills, certs, prev_assign = _load_inputs(db_path, order_ids, policy)
+
+    # Refuse to report "OPTIMAL" on an empty schedule: seeded orders must
+    # generate tasks first, otherwise the solver trivially succeeds on zero jobs.
+    if not tasks:
+        return {
+            "status": "EMPTY",
+            "message": "No jobs to schedule yet. Generate jobs first.",
+            "runtime": 0.0,
+            "objective": None,
+            "assignments": [],
+            "zero_eligibility": [],
+        }
+
     horizon_days = int(policy["horizon_days"])
     horizon_slots = horizon_days * 24 * SLOTS_PER_HOUR
     hs = resolve_horizon_start(policy)

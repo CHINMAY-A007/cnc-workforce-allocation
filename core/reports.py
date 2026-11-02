@@ -21,10 +21,12 @@ def utilization_by_employee(db_path=None, version_id=None):
             dur = (r["end_slot"] - r["start_slot"]) * 15 / 60.0
             for e in emp_ids:
                 rows.append((e, dur))
+    # every employee appears in the report, even with zero scheduled time
+    emps = [r["id"] for r in conn.execute("SELECT id FROM employees ORDER BY id").fetchall()]
     conn.close()
-    agg = {}
+    agg = {e: 0.0 for e in emps}
     for e, d in rows:
-        agg[e] = agg.get(e, 0) + d
+        agg[e] = agg.get(e, 0.0) + d
     return agg
 
 
