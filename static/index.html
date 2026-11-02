@@ -99,31 +99,83 @@ async function render(){
 }
 
 // ---------- Home ----------
+const STEPS = [
+  {n:1, t:'1. Add Order', d:'Create a production order or use the seeded ones.', tab:'orders', say:'We start with released production orders. Each order carries a product, quantity, priority and due date.'},
+  {n:2, t:'2. Generate Tasks', d:'Tasks are auto-created from the product routing.', tab:'orders', say:'Each order auto-breaks into jobs — cutting, turning, 5-axis, VMC, deburring, CMM, packing — with skills, levels and dependencies.'},
+  {n:3, t:'3. Get AI Proposal', d:'Run the solver for an optimized schedule.', tab:'allocation', say:'The solver assigns every job to an eligible worker within shift, certification and capacity rules — solved in seconds.'},
+  {n:4, t:'4. Review and Approve', d:'Edit, lock, then approve.', tab:'approval', say:'The production manager reviews, overrides only with a reason, locks critical assignments, then approves the schedule.'},
+  {n:5, t:'5. Handle a Surprise', d:'Simulate absence/breakdown and replan.', tab:'progress', say:'When someone is absent, we replan in seconds — locked tasks stay put and everything else moves around them.'},
+];
+let homeStep = Math.min(5, Math.max(1, parseInt(localStorage.getItem('homeStep') || '1', 10)));
+let presenterOpen = localStorage.getItem('presenterOpen') === '1';
+
 async function renderHome(){
   const alerts = await get('/api/alerts');
   document.getElementById('alertBadge').textContent = alerts.count;
+  const s = STEPS[homeStep-1];
   show(`
   <div class="card">
-    <h2 class="text-xl font-bold mb-2">Home / Guided Demo</h2>
-    <p class="text-gray-600 mb-4">5-step walkthrough for the Production Manager.</p>
-    <div class="grid gap-3">
-      ${[['1. Add Order','Create a production order or use seeded ones.','orders'],
-         ['2. Generate Tasks','Tasks auto-created from the product routing.','orders'],
-         ['3. Get AI Proposal','Run the solver for an optimized schedule.','allocation'],
-         ['4. Review and Approve','Edit, lock, then approve.','approval'],
-         ['5. Handle a Surprise','Simulate absence/breakdown and replan.','progress']].map(([t,d,tab])=>`
-        <div class="card flex items-center justify-between">
-          <div><div class="font-semibold">${t}</div><div class="text-sm text-gray-500">${d}</div></div>
-          <button class="bg-blue-600 text-white px-3 py-1 rounded" onclick="goTab('${tab}')">Open</button>
-        </div>`).join('')}
+    <!-- Hero -->
+    <div class="mb-5">
+      <p class="text-base text-gray-700 mb-4 leading-relaxed">This tool reads your production orders, breaks them into jobs, and automatically picks the right worker for each job.</p>
+      <div class="inline-flex items-center gap-2 text-xs text-gray-500 mb-3"><span class="badge b-blue">Demo data</span><span class="ml-2">Sample CNC Works, Bangalore</span><span class="ml-2">· simulated ERP (local SQLite)</span></div>
+      <div class="flex flex-wrap gap-2">
+        <button class="bg-blue-600 text-white px-6 py-3 rounded text-lg font-semibold shadow" onclick="startDemo()">Start the 2-minute demo</button>
+        <button class="bg-gray-200 text-gray-800 px-4 py-2 rounded" onclick="goTab('orders')">Open Orders</button>
+      </div>
     </div>
-    <div class="mt-4 flex gap-2">
-      <button class="bg-green-600 text-white px-4 py-2 rounded" onclick="resetDemo()">Load / Reset demo data</button>
-      <button class="bg-gray-200 px-4 py-2 rounded" onclick="goTab('orders')">Open Orders</button>
-      <button class="bg-gray-200 px-4 py-2 rounded" onclick="goTab('allocation')">Open Allocation</button>
+
+    <!-- Benefit cards -->
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+      <div class="card p-3"><div class="text-xs text-gray-500 uppercase tracking-wider mb-1">No manual scheduling</div><div class="text-sm font-semibold">AI picks the right worker</div><p class="text-xs text-gray-600 mt-1">Every job is matched to an eligible worker by skill, certification, shift and capacity.</p></div>
+      <div class="card p-3"><div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Replan in seconds</div><div class="text-sm font-semibold">Handle surprises fast</div><p class="text-xs text-gray-600 mt-1">Simulate an absence or breakdown and get a revised plan without touching locked work.</p></div>
+      <div class="card p-3"><div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Full audit trail</div><div class="text-sm font-semibold">Approvals logged</div><p class="text-xs text-gray-600 mt-1">Every reassignment, lock and approval is recorded with a reason.</p></div>
+    </div>
+
+    <!-- 5-step guided bar -->
+    <div class="mb-4">
+      <div class="text-xs font-semibold text-gray-500 uppercase mb-2">Guided demo &nbsp;·&nbsp; Step ${homeStep} of 5</div>
+      <div class="flex gap-1 mb-2" id="stepBar">
+        ${STEPS.map((st,i)=>{
+          const cur = i+1 === homeStep;
+          return `<div class="flex items-center gap-2 ${cur?'bg-blue-600 text-white':'bg-gray-200 text-gray-800'} rounded-lg px-3 py-1.5 min-w-[150px]">
+            <span class="text-xs font-semibold ${cur?'text-white':'text-gray-600'}">${st.t}</span>
+            <button class="ml-auto text-xs ${cur?'bg-white text-blue-600':'bg-white text-gray-600'} px-2 py-0.5 rounded" onclick="goTab('${st.tab}')">Open</button>
+          </div>`;
+        }).join('')}
+      </div>
+      <div class="flex gap-2 items-center">
+        <button class="bg-blue-600 text-white px-4 py-2 rounded" onclick="nextStep()" ${homeStep===5?'disabled':''} >Next step</button>
+        <span class="text-xs text-gray-500 self-center">Click "Open" on a step to go there — data loads automatically.</span>
+      </div>
+      <div class="mt-2 text-sm text-gray-600 italic">${s.d}</div>
+    </div>
+
+    <!-- Presenter notes (collapsible) -->
+    <div class="card border-l-4 border-blue-600">
+      <div class="flex items-center justify-between cursor-pointer" onclick="togglePresenter()" role="button" tabindex="0" aria-expanded="${presenterOpen}" aria-label="Toggle presenter notes">
+        <h3 class="font-semibold flex items-center gap-1">📒 Presenter notes <span id="presenterIcon">${presenterOpen?'▾':'▸'}</span></h3>
+      </div>
+      <div id="presenterBody" class="${presenterOpen?'':'hidden'} mt-3 space-y-3 pt-2 border-t border-gray-100">
+        ${STEPS.map((st,i)=>{
+          const cur = i+1 === homeStep;
+          return `<div class="${cur?'bg-blue-50 border border-blue-100':'bg-gray-50 border border-gray-200'} rounded p-2 text-sm">
+            <div class="font-semibold text-xs ${cur?'text-blue-800':'text-gray-700'} mb-1">Step ${i+1}: ${st.t}</div>
+            <div class="mb-1"><b>Click:</b> Open → ${st.tab.charAt(0).toUpperCase()+st.tab.slice(1)} tab</div>
+            <div><b>Say:</b> "${st.say}"</div>
+          </div>`;
+        }).join('')}
+        <div class="bg-amber-50 border border-amber-200 rounded p-2 text-sm mt-2">
+          <div class="font-semibold text-amber-800 text-xs mb-1">Reset / start</div>
+          <div>Click <b>"Start the 2-minute demo"</b> to restore clean seeded data and begin at Step 1.</div>
+        </div>
+      </div>
     </div>
   </div>`);
 }
+function startDemo(){ homeStep=1; localStorage.setItem('homeStep','1'); resetDemo(); }
+function nextStep(){ if(homeStep<5){ homeStep++; localStorage.setItem('homeStep',String(homeStep)); render(); } }
+function togglePresenter(){ presenterOpen=!presenterOpen; localStorage.setItem('presenterOpen', presenterOpen?'1':'0'); render(); }
 function goTab(t){ activeTab=t; localStorage.setItem('tab',t); renderTabs(); render(); }
 async function resetDemo(){ await post('/api/reset',{}); alert('Demo data reset.'); render(); }
 
