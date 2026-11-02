@@ -9,17 +9,17 @@ st.set_page_config(page_title="CNC Workforce Allocation (Demo)", layout="wide")
 role = sidebar_role_switcher()
 
 # Page definitions
-import pages.home as p_home
-import pages.orders as p_orders
-import pages.workforce as p_workforce
-import pages.allocation as p_allocation
-import pages.gantt as p_gantt
-import pages.approval as p_approval
-import pages.mytasks as p_mytasks
-import pages.progress as p_progress
-import pages.reports as p_reports
-import pages.audit as p_audit
-import pages.requirements as p_requirements
+import views.home as p_home
+import views.orders as p_orders
+import views.workforce as p_workforce
+import views.allocation as p_allocation
+import views.gantt as p_gantt
+import views.approval as p_approval
+import views.mytasks as p_mytasks
+import views.progress as p_progress
+import views.reports as p_reports
+import views.audit as p_audit
+import views.requirements as p_requirements
 
 # Role-based page visibility
 ALL_PAGES = [
