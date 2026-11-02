@@ -63,6 +63,15 @@ def startup():
 def _role(request: Request) -> str:
     return request.headers.get("x-role", "Production Manager")
 
+MANAGER_ROLES = {"Production Manager", "ERP Administrator"}
+MANAGER_ENGINEER_ROLES = {"Production Manager", "Engineer/Supervisor", "ERP Administrator"}
+HR_ROLES = {"Production Manager", "HR/Workforce Admin", "ERP Administrator"}
+
+def _require_role(request: Request, allowed: set):
+    r = _role(request)
+    if r not in allowed:
+        raise HTTPException(403, f"{r} not permitted for this action")
+
 
 # ---------- static frontend ----------
 @app.get("/health")
@@ -176,6 +185,7 @@ def api_parse_notes(text: str = ""):
 # ---------- solve ----------
 @app.post("/api/solve")
 async def api_solve(request: Request):
+    _require_role(request, MANAGER_ENGINEER_ROLES)
     data = await request.json()
     policy = get_policy(DB)
     if data.get("weights"):
@@ -248,6 +258,7 @@ def api_schedule(vid: str):
 # ---------- approval ----------
 @app.post("/api/reassign")
 async def api_reassign(request: Request):
+    _require_role(request, MANAGER_ROLES)
     data = await request.json()
     vid = data["version_id"]; tid = data["task_id"]; new_emp = data["employee_id"]; reason = data.get("reason", "")
     if not reason.strip():
@@ -266,6 +277,7 @@ async def api_reassign(request: Request):
 
 @app.post("/api/lock")
 async def api_lock(request: Request):
+    _require_role(request, MANAGER_ROLES)
     data = await request.json()
     vid = data["version_id"]; tid = data["task_id"]
     conn = get_conn(DB)
@@ -279,9 +291,7 @@ async def api_lock(request: Request):
 
 @app.post("/api/unlock")
 async def api_unlock(request: Request):
-    role = _role(request)
-    if role != "Production Manager":
-        raise HTTPException(403, "only Production Manager can unlock")
+    _require_role(request, MANAGER_ROLES)
     data = await request.json()
     vid = data["version_id"]; tid = data["task_id"]
     conn = get_conn(DB)
@@ -295,6 +305,7 @@ async def api_unlock(request: Request):
 
 @app.post("/api/approve")
 async def api_approve(request: Request):
+    _require_role(request, MANAGER_ROLES)
     data = await request.json()
     vid = data["version_id"]
     role = _role(request)
@@ -311,6 +322,7 @@ async def api_approve(request: Request):
 
 @app.post("/api/reject")
 async def api_reject(request: Request):
+    _require_role(request, MANAGER_ROLES)
     data = await request.json()
     vid = data["version_id"]; reason = data.get("reason", "rejected")
     conn = get_conn(DB)
@@ -324,6 +336,7 @@ async def api_reject(request: Request):
 # ---------- replan ----------
 @app.post("/api/replan")
 async def api_replan(request: Request):
+    _require_role(request, MANAGER_ROLES)
     data = await request.json()
     event = data["event"]
     policy = get_policy(DB)
@@ -422,6 +435,7 @@ def api_policy_get():
 
 @app.post("/api/policy")
 async def api_policy_set(request: Request):
+    _require_role(request, HR_ROLES)
     data = await request.json()
     set_policy(data, DB)
     log_action(_role(request), _role(request), "policy_update", "policy", before=None, after=data, reason="settings", db_path=DB)
