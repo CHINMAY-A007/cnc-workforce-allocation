@@ -696,7 +696,7 @@ async function verifyAll(){
   try{
     const res=await post('/api/requirements/verify',{});
     let all=true; for(const k in res.results){if(res.results[k].status!=='verified')all=false;}
-    toast(all?'All 15 requirements verified.'+'Some requirements still need verification.','err');
+    toast(all?'All 15 requirements verified.':'Some requirements still need verification.','err');
     renderAudit();
   }catch(e){toast('Verify failed: '+e.message,'err');}
 }
