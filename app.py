@@ -58,6 +58,10 @@ def _role(request: Request) -> str:
 
 
 # ---------- static frontend ----------
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
