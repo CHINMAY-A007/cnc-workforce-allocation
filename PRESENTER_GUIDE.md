@@ -1,37 +1,25 @@
-# Presenter Guide — CNC Workforce Allocation Demo (8-step script)
+# Presenter guide - CNC Workforce Allocation demo
 
-Audience: client / stakeholder walkthrough. Total time: ~2 minutes.
-Prerequisite: the app is running (http://localhost:8000 or your live URL). Role selector = Production Manager.
+Audience: client walkthrough, about 5 minutes. Keep the role switcher on Production Manager. All people, customers and orders are fictional ("Sample CNC Works, Bangalore"). The ERP is a local simulation.
 
-## Before you start
+The app has a built-in script: on the Home screen the six guided steps tick off as you go, and **Demo script** (top right) shows what to say on each screen.
 
-1. Open the app.
-2. On the home page, click **"Start the 2-minute demo"**. This resets clean seeded data and highlights Step 1 of the guided bar.
-3. Keep the **Presenter notes** panel (collapsible, on the home page) open — it gives the exact click + one-line talking point for each step.
-4. Everything shown is labeled **"Demo data — Sample CNC Works, Bangalore"**; the "ERP" is a local SQLite simulation.
+## Fast path
+Home -> **Prepare a ready schedule for me**. It creates a schedule and approves it as the manager. Then jump to Schedule Chart, or run the full path below.
 
-## The 8-step demo
+## Full path
+| Step | Click | Say |
+|---|---|---|
+| 1 Orders | Orders and Tasks | "Five released orders from the ERP. Each already has jobs from its routing." |
+| 2 Add an urgent order | Fill the demo example -> Create order | "A note like 'certified inspector only' becomes a rule on the right job. Phrases the reader does not know are shown, not guessed." |
+| 3 Who is allowed | Workforce and Skills, or Who can do this? on a job | "Every exclusion has a reason: skill level, expired certificate, leave." |
+| 4 AI proposal | AI Allocation Proposal -> Generate schedule | "Person, machine and time for every job, and a reason for each. If no plan exists it says why and what would help." |
+| 5 You decide | Approval and Changes: change a person (reason needed), lock a job, Approve | "Nothing is final until a manager approves. Locked jobs never move silently." |
+| 6 Surprise | Live Progress and Alerts: Simulate absence | "Only the affected jobs are replanned. Unrelated jobs keep their person, machine and time. You see what changed and approve or discard." |
+| Extra | Run the impossible case | "If nobody qualified is available, the app refuses to invent a plan and explains." |
+| Evidence | How it works / Requirements -> Run the self-test | "A scratch-copy run of the whole workflow checks each of the 15 requirements." |
 
-| Step | Exact clicks | One-line talking point |
-|------|--------------|------------------------|
-| 1. Open Home / Start demo | Home → click **"Start the 2-minute demo"** (resets data, highlights Step 1) | "Every order, employee and order here is fictional demo data for Sample CNC Works." |
-| 2. Add / view orders | Step 1 → **Open** (Orders and Tasks) → review released orders ORD-1001…ORD-1005 | "We start with released production orders; each carries a product, quantity, priority and due date." |
-| 3. Generate tasks / jobs | Step 2 → **Open** (Orders and Tasks) → view the Tasks table | "Each order auto-breaks into jobs — cutting, turning, 5-axis, VMC, deburring, CMM, packing — with skills, levels and dependencies." |
-| 4. Get the AI proposal | Step 3 → **Open** (AI Allocation Proposal) → **Generate Schedule** | "The solver assigns every job to an eligible worker within shift, certification and capacity rules — solved in seconds." |
-| 5. Explain an assignment | In Proposal → open **"Why this person?"** for a task | "We can show exactly why this worker was picked: skill level, availability, continuity and workload." |
-| 6. Review, override & approve | Step 4 → **Open** (Approval and Reassignment) → reassign one task (type a reason) → lock two tasks → **Approve version** | "The production manager reviews, overrides only with a reason, locks critical assignments, then approves the schedule." |
-| 7. Handle a surprise | Step 5 → **Open** (Live Progress and Alerts) → Simulate **absence** (pick E07 or E08, the 5-axis staff) → **Approve revised plan** | "When someone is absent, we replan in seconds — locked tasks stay put and everything else moves around them." |
-| 8. Verify evidence | **Reports** → utilization / bottleneck / planned vs actual → **Audit and Settings** → audit log | "Every reassignment, lock and approval is logged; reports show utilization, bottlenecks and on-time performance." |
-
-## Talking points (cheat sheet)
-
-- "Sample CNC Works, Bangalore" — all companies, employees, customers and orders are fictional demo data; simulated ERP = local SQLite, no real ERP integration.
-- Solver: Google OR-Tools CP-SAT (free, Apache 2.0).
-- Role switcher is a demo simulation, not real authentication.
-- Reset anytime: **"Start the 2-minute demo"** restores clean seeded data.
-
-## If something goes wrong
-
-- No schedule yet? Generate one on AI Allocation Proposal first (Step 4).
-- Replan reports "locked conflicts"? Unlock the conflicting task (Production Manager only) or don't lock it before simulating.
-- Zero-eligibility tasks in the "impossible case"? Expected — all certified 5-axis staff are absent; no assignment is invented. Options: extend due date, overtime within caps, reschedule maintenance.
+## Honest limits to mention if asked
+- The solver (Google OR-Tools CP-SAT) is free and runs on the server. The note reader uses keywords only, with no outside AI service, unless the owner turns it on.
+- The role switcher shows permissions. It is not a login.
+- On a free Render instance the database resets when the service restarts. Use "Download a backup" first if you need the data.

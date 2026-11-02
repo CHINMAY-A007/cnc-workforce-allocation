@@ -44,11 +44,11 @@ function toast(msg, kind = "info", ms = 4500) { const t = document.createElement
 function fail(e) { toast(e.message || String(e), "err", 8000); const p = $("#page"); const box = document.createElement("div"); box.className = "errbox"; box.innerHTML = "<b>Something needs your attention.</b> " + esc(e.message || e); p.prepend(box); window.scrollTo({ top: 0, behavior: "smooth" }); }
 async function guard(fn) { try { return await fn(); } catch (e) { fail(e); } }
 function chip(kind, text, icon) { return `<span class="chip ${kind}">${icon ? icon + " " : ""}${esc(text)}</span>`; }
-const BADGE = { on_time: ["green", "On time", "&#10004;"], at_risk: ["amber", "At risk", "&#9888;"], late: ["red", "Late", "&#10006;"] };
+const BADGE = { on_time: ["green", "On time", "<i class=ic-check></i>"], at_risk: ["amber", "At risk", "<i class=ic-warn></i>"], late: ["red", "Late", "<i class=ic-cross></i>"] };
 const badge = (s) => { const b = BADGE[s] || ["grey", s, ""]; return chip(b[0], b[1], b[2]); };
 const PRIO = { Urgent: ["red", "Urgent"], High: ["amber", "High"], Normal: ["grey", "Normal"] };
 const prio = (p) => chip(PRIO[p]?.[0] || "grey", PRIO[p]?.[1] || p);
-const lockI = '<span title="Locked: only an explicit unlock can change it">&#128274;</span>';
+const lockI = '<span title="Locked: only an explicit unlock can change it"><i class=ic-lock></i></span>';
 function fmtDate(iso) { if (!iso) return ""; const d = new Date(iso + "T00:00:00"); return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }); }
 function empty(title, text, btn) { return `<div class="empty"><b>${esc(title)}</b>${esc(text)}${btn ? `<div style="margin-top:12px">${btn}</div>` : ""}</div>`; }
 function modal(html) { $("#modalbody").innerHTML = html; $("#modal").classList.remove("hidden"); }
@@ -121,7 +121,7 @@ PAGES.home = async (p) => {
   const next = steps.findIndex((x) => !x.done && !x.optional);
   p.innerHTML = `
   <div class="hero">
-    <h1>Plan the factory floor in minutes, not hours</h1>
+    <h1>Plan the factory floor with fewer clashes and clear reasons</h1>
     <p>An order comes in. The app breaks it into jobs, checks who is allowed to do each one, and proposes who works on what and when. <b>You stay in charge</b>: you review, change, lock and approve.</p>
     <div class="flow"><span class="node">1 Order<small>from the ERP</small></span><span class="arrow">&rarr;</span><span class="node">2 Jobs<small>from the routing</small></span><span class="arrow">&rarr;</span><span class="node">3 Who is allowed<small>skills, certificates, leave</small></span><span class="arrow">&rarr;</span><span class="node">4 AI schedule<small>person + machine + time</small></span><span class="arrow">&rarr;</span><span class="node">5 You approve<small>edit, lock, reject</small></span></div>
     <p style="font-size:15px;color:#b9cdf5">Benefits: less manual planning, no unqualified assignments, early warning for late orders, and a recorded reason for every decision. Demo data only. Nothing here controls a machine.</p>
@@ -129,7 +129,7 @@ PAGES.home = async (p) => {
   <div class="card"><h2>Quick start for presenters</h2><p class="help" style="margin-bottom:10px">Want to jump straight to a finished schedule? This creates a plan and approves it as the Production Manager, exactly like steps 3 and 4 below.</p>
     <button class="primary big" id="quick" ${isManager() ? "" : "disabled"}>Prepare a ready schedule for me</button> ${isManager() ? "" : '<span class="muted">Switch to the Production Manager role to use this.</span>'}</div>
   <h2>Guided demo: six steps</h2>
-  <div class="steps">${steps.map((x, i) => `<div class="step ${x.done ? "done" : i === next ? "next" : ""}"><div class="num">${x.done ? "&#10004;" : i + 1}</div><div class="t"><b>${esc(x.t)}</b><span>${esc(x.d)}</span></div><button class="${i === next ? "primary" : ""}" data-i="${i}">${esc(x.btn)}</button></div>`).join("")}</div>
+  <div class="steps">${steps.map((x, i) => `<div class="step ${x.done ? "done" : i === next ? "next" : ""}"><div class="num">${x.done ? "<i class=ic-check></i>" : i + 1}</div><div class="t"><b>${esc(x.t)}</b><span>${esc(x.d)}</span></div><button class="${i === next ? "primary" : ""}" data-i="${i}">${esc(x.btn)}</button></div>`).join("")}</div>
   <div class="card" style="margin-top:18px"><h3>Starting point</h3>
     <p>The plan starts on <b>${esc(s.horizon_text)}</b> and covers ${s.horizon_days} days (Monday to Saturday working, Sunday off; a demo assumption you can change in Settings). Dates are always set relative to the day you load the demo.</p>
     <button id="resetbtn">Reset demo data...</button> <button id="exportbtn">Download a backup (JSON)</button></div>`;
@@ -203,8 +203,8 @@ async function eligibility(tid) {
   const e = await get("/api/eligibility/" + encodeURIComponent(tid));
   const blocked = e.excluded.filter((x) => x.kind === "blocked"), nq = e.excluded.filter((x) => x.kind !== "blocked");
   modal(`<h2>Who can do: ${esc(e.task.name)} (${esc(e.task.order_id)})</h2><p class="muted">Checked for ${esc(e.day_text)}. Needs ${esc(e.task.required_skill)} level ${e.task.min_level}${e.task.extra_skill ? " and " + esc(e.task.extra_skill) : ""}, role ${esc(e.task.required_role)}. These rules have no override.</p>
-  <h3>${chip("green", e.candidates.length + " eligible", "&#10004;")}</h3>${e.candidates.length ? `<table><tr><th>Person</th><th>Shift</th><th>Skill level</th></tr>${e.candidates.map((c) => `<tr><td>${esc(c.employee_name)}</td><td>${esc(c.shift)}</td><td>${c.skill_level}</td></tr>`).join("")}</table>` : '<div class="note bad">Nobody is eligible on this day.</div>'}
-  <h3 style="margin-top:14px">${chip("red", blocked.length + " excluded for a specific reason", "&#10006;")}</h3>${blocked.length ? `<table>${blocked.map((x) => `<tr><td><b>${esc(x.person)}</b></td><td>${x.reasons.map(esc).join("<br>")}</td></tr>`).join("")}</table>` : '<p class="muted">None.</p>'}
+  <h3>${chip("green", e.candidates.length + " eligible", "<i class=ic-check></i>")}</h3>${e.candidates.length ? `<table><tr><th>Person</th><th>Shift</th><th>Skill level</th></tr>${e.candidates.map((c) => `<tr><td>${esc(c.employee_name)}</td><td>${esc(c.shift)}</td><td>${c.skill_level}</td></tr>`).join("")}</table>` : '<div class="note bad">Nobody is eligible on this day.</div>'}
+  <h3 style="margin-top:14px">${chip("red", blocked.length + " excluded for a specific reason", "<i class=ic-cross></i>")}</h3>${blocked.length ? `<table>${blocked.map((x) => `<tr><td><b>${esc(x.person)}</b></td><td>${x.reasons.map(esc).join("<br>")}</td></tr>`).join("")}</table>` : '<p class="muted">None.</p>'}
   <details style="margin-top:12px"><summary>${nq.length} other people are not qualified for this job (wrong role or skill)</summary><table>${nq.map((x) => `<tr><td>${esc(x.person)}</td><td class="muted">${x.reasons.map(esc).join("; ")}</td></tr>`).join("")}</table></details>`);
 }
 
@@ -212,7 +212,7 @@ async function eligibility(tid) {
 PAGES.workforce = async (p) => {
   const w = await get("/api/workforce");
   const edit = ST.role === "HR/Workforce Admin" || isManager();
-  const CS = { expired: ["red", "Expired", "&#10006;"], "expiring soon": ["amber", "Expiring soon", "&#9888;"], valid: ["green", "Valid", "&#10004;"] };
+  const CS = { expired: ["red", "Expired", "<i class=ic-cross></i>"], "expiring soon": ["amber", "Expiring soon", "<i class=ic-warn></i>"], valid: ["green", "Valid", "<i class=ic-check></i>"] };
   p.innerHTML = `<h1>Workforce and Skill Matrix</h1><p class="help">Who works here, what they are good at (level 1 to 5) and whether their certificates are valid. Darker blue means higher skill. Certificates that are expired or expiring soon are flagged, and expired ones remove the person from matching jobs.</p>
   <div class="card"><h2>Skill heatmap</h2><div class="legend">${[0, 1, 2, 3, 4, 5].map((l) => `<span><i class="l${l}"></i>${l ? "Level " + l : "No skill"}</span>`).join("")}</div><div class="tw"><table class="heat"><thead><tr><th>Person</th><th>Team / shift</th>${w.skills.map((s) => `<th class="c">${esc(s)}</th>`).join("")}</tr></thead><tbody>
   ${w.employees.map((e) => `<tr><td><b>${esc(e.name)}</b><br><span class="muted" style="font-size:13px">${esc(e.role)}</span></td><td>${esc(e.team)} / Shift ${esc(e.shift)}</td>${w.skills.map((s) => `<td class="c l${e.levels[s]}" title="${esc(e.name)}: ${esc(s)} level ${e.levels[s]}">${e.levels[s] || "-"}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>
@@ -268,7 +268,7 @@ function noPlanHTML(r) {
   else if (st === "EMPTY" || st === "BAD_DATA") h += `<div class="note warn"><b>${esc(r.message)}</b></div>`;
   else h += `<div class="note bad"><b>No valid plan exists.</b> ${esc(r.message || "")} No rule was bent.</div>`;
   if (d && d.zero_eligibility && d.zero_eligibility.length) h += `<div class="card"><h3>Proven blocker: jobs with nobody eligible</h3><table>${d.zero_eligibility.map((z) => `<tr><td><b>${esc(z.task_name)}</b> (${esc(z.order_id)})</td><td>${esc(z.needs)}</td><td>${esc(z.why)}</td></tr>`).join("")}</table></div>`;
-  if (d && d.relaxation_tests) h += `<div class="card"><h3>What-if tests (labelled tests, not proof)</h3><table>${d.relaxation_tests.map((t) => `<tr><td>${esc(t.label)}</td><td>${esc(t.what_if)}</td><td>${t.fixes ? chip("green", "a plan exists", "&#10004;") : chip("red", "still no plan", "&#10006;")}</td></tr>`).join("")}</table><h3 style="margin-top:12px">What could fix it</h3><ul>${d.remedies.map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="muted">Fallback: plan manually using the Orders and Workforce screens. The last approved schedule stays in place.</p></div>`;
+  if (d && d.relaxation_tests) h += `<div class="card"><h3>What-if tests (labelled tests, not proof)</h3><table>${d.relaxation_tests.map((t) => `<tr><td>${esc(t.label)}</td><td>${esc(t.what_if)}</td><td>${t.fixes ? chip("green", "a plan exists", "<i class=ic-check></i>") : chip("red", "still no plan", "<i class=ic-cross></i>")}</td></tr>`).join("")}</table><h3 style="margin-top:12px">What could fix it</h3><ul>${d.remedies.map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="muted">Fallback: plan manually using the Orders and Workforce screens. The last approved schedule stays in place.</p></div>`;
   return h;
 }
 

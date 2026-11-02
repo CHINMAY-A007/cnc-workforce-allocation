@@ -122,3 +122,52 @@ def test_selftest_all_requirements_pass():
     res = selftest.run_all()
     bad = {k: v for k, v in res.items() if not v["ok"]}
     assert len(res) == 15 and not bad, bad
+
+
+def _asg(c, vid):
+    return {a["task_id"]: a for a in c.get(f"/api/version/{vid}").json()["assignments"]}
+
+
+def test_absence_replan_freezes_unrelated_work(client):
+    vid = approved(client)
+    base = _asg(client, vid)
+    tasks = client.get("/api/tasks").json()
+    tasks = tasks if isinstance(tasks, list) else tasks["tasks"]
+    deps = {t["id"]: t.get("depends_on", []) for t in tasks}
+    emp = max({e for a in base.values() for e in a["employee_ids"]}, key=lambda e: sum(e in a["employee_ids"] for a in base.values()))
+    r = client.post("/api/replan", json={"event": {"type": "absence", "employee_id": emp, "days": 1}}, headers=PM).json()
+    assert r["result"] == "proposed", r
+    new = _asg(client, r["version_id"])
+    affected = set(r["affected_tasks"])
+    closure, changed = set(affected), True
+    while changed:
+        changed = False
+        for t, d in deps.items():
+            if t not in closure and any(x in closure for x in d):
+                closure.add(t); changed = True
+    for tid, a in base.items():
+        if tid not in closure:
+            b = new[tid]
+            assert (b["employee_ids"], b["work_center_id"], b["start_slot"]) == (a["employee_ids"], a["work_center_id"], a["start_slot"]), f"{tid} moved but is unrelated"
+        elif tid not in affected and not r.get("widened"):
+            assert new[tid]["employee_ids"] == a["employee_ids"], f"{tid} follower changed person"
+    # the absent person does not work on the absent day
+    day0 = min(a["start_slot"] for a in base.values()) // 96
+    for a in new.values():
+        if emp in a["employee_ids"]:
+            assert a["start_slot"] // 96 != day0 or a["locked"] is None
+
+
+def test_locked_assignment_made_impossible_asks_for_unlock(client):
+    vid = approved(client)
+    base = _asg(client, vid)
+    emp = next(iter(next(iter(base.values()))["employee_ids"]))
+    first_day = min(a["start_slot"] for a in base.values()) // 96
+    target = next(t for t, a in base.items() if emp in a["employee_ids"] and a["start_slot"] // 96 == first_day)
+    assert client.post("/api/lock", json={"version_id": vid, "task_id": target, "reason": "t"}, headers=PM).status_code == 200
+    r = client.post("/api/replan", json={"event": {"type": "absence", "employee_id": emp, "days": 7}}, headers=PM).json()
+    assert r["result"] == "conflict" and r["requires_unlock"] and any(c["task_id"] == target for c in r["conflicts"])
+    # nothing was saved: still one approved version and no new draft
+    versions = client.get("/api/versions").json()
+    versions = versions if isinstance(versions, list) else versions.get("versions", [])
+    assert len(versions) == 1

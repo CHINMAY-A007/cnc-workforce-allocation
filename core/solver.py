@@ -151,8 +151,9 @@ def solve(db_path, order_ids: List[str], policy: Optional[dict] = None, *, weigh
         pin = pinned.get(tid)
         if pin:
             match = [o for o in olist if sorted(o["emps"]) == sorted(pin["employee_ids"]) and o["wc"] == pin["work_center_id"]]
-            pd = int(pin["start_slot"]) // SLOTS_PER_DAY
-            match = [o for o in match if any(dd[0] == pd for dd in o["days"])]
+            if pin.get("start_slot") is not None:
+                pd = int(pin["start_slot"]) // SLOTS_PER_DAY
+                match = [o for o in match if any(dd[0] == pd for dd in o["days"])]
             if not match:
                 zero.append({"task_id": tid, "reason": "pinned assignment is no longer valid"})
                 return {"status": "INFEASIBLE", "message": f"Locked or unchanged assignment for {t['name']} ({tid}) is no longer valid.",
@@ -182,7 +183,7 @@ def solve(db_path, order_ids: List[str], policy: Optional[dict] = None, *, weigh
                 emp_iv[e].append(iv)
                 emp_total[e].append((dur, pres))
             wc_iv[o["wc"]].append(iv)
-            if pin:
+            if pin and pin.get("start_slot") is not None:
                 model.Add(start == int(pin["start_slot"]))
         opts[tid] = olist
         model.Add(sum(o["pres"] for o in olist) == 1)

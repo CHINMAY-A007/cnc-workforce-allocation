@@ -496,7 +496,10 @@ def replan(db, actor, role, event: dict) -> dict:
         return {"result": "conflict", "event_text": explain, "conflicts": conflicts, "requires_unlock": True,
                 "message": "Nothing was changed. Unlock the affected assignment (with a reason) on the Approval screen, then run the simulation again."}
 
-    def run(unpin_unlocked: bool):
+    def run(mode: int):
+        # mode 0: only the affected jobs are free; followers keep their person and machine but may move in time
+        # mode 1: affected jobs and followers are free; mode 2: everything unlocked is free
+        unpin_unlocked = mode == 2
         pinned = {}
         for tid, a in base_asg.items():
             t = tmap.get(tid)
@@ -504,6 +507,8 @@ def replan(db, actor, role, event: dict) -> dict:
                 continue
             done = t["status"] in ("In Progress", "Completed")
             if tid in movable and not (a["locked"] or done):
+                if mode == 0 and tid not in affected:
+                    pinned[tid] = {"employee_ids": a["employee_ids"], "work_center_id": a["work_center_id"], "start_slot": None, "locked": False}
                 continue
             if unpin_unlocked and not (a["locked"] or done):
                 continue
@@ -515,11 +520,12 @@ def replan(db, actor, role, event: dict) -> dict:
             only = [dict(t, duration_min=t["duration_min"] + ev["minutes"]) if t["id"] == event["task_id"] else t for t in load_tasks(order_ids, db)]
         return solve(db, order_ids, c2.policy, pinned=pinned, ctx=c2, time_limit_sec=8, only_tasks=only, prev_assign={k: v for k, v in base_asg.items()})
 
-    res = run(False)
+    res = run(0)
     widened = False
-    if res["status"] not in ("OPTIMAL", "FEASIBLE") and res["status"] == "INFEASIBLE" and not res.get("zero_eligibility"):
-        res = run(True)
-        widened = True
+    for nxt in (1, 2):
+        if res["status"] == "INFEASIBLE" and not any(z.get("reason") == "nobody is eligible" for z in res.get("zero_eligibility", [])):
+            res = run(nxt)
+            widened = True
     if res["status"] not in ("OPTIMAL", "FEASIBLE"):
         diag = diagnose(db, order_ids, {}, absent_days)
         log_action(actor, role, "replan_failed", typ, after=explain, reason=res.get("message", ""), version_id=base_vid, db_path=db)
