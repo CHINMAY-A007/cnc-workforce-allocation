@@ -1,17 +1,14 @@
-"""Rule-based keyword parser for free-text order notes.
-
-This is keyword matching, NOT language understanding. It extracts extra
-requirements by matching known terms. Unknown phrases are rejected and shown
-to the manager; nothing is silently applied.
-"""
+"""Note reader: optional Gemini LLM, falling back to rule-based keyword parser."""
 
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Tuple
+import os
+from typing import Dict, List
 
-# term -> (kind, canonical value)
-KEYWORD_MAP: Dict[str, Tuple[str, str]] = {
+import httpx
+
+KEYWORD_MAP: Dict[str, tuple] = {
     "titanium": ("skill", "Titanium Machining"),
     "titanium machining": ("skill", "Titanium Machining"),
     "certified inspector": ("cert", "CMM Inspection Cert"),
@@ -37,15 +34,12 @@ KNOWN_CERTS = {
 }
 
 
-def parse_notes(text: str) -> Dict[str, List[str]]:
+def _keyword_parse(text: str) -> Dict[str, List[str]]:
     low = (text or "").lower()
     found_skills: List[str] = []
     found_certs: List[str] = []
     found_notes: List[str] = []
-    matched_phrases: List[str] = []
-    rejected: List[str] = []
-
-    # try multi-word phrases first
+    matched: List[str] = []
     for phrase in sorted(KEYWORD_MAP.keys(), key=len, reverse=True):
         if phrase in low:
             kind, val = KEYWORD_MAP[phrase]
@@ -55,28 +49,84 @@ def parse_notes(text: str) -> Dict[str, List[str]]:
                 found_certs.append(val)
             elif kind == "note" and val not in found_notes:
                 found_notes.append(val)
-            matched_phrases.append(phrase)
-
-    # validate against known structured fields
+            matched.append(phrase)
     validated_skills = [s for s in found_skills if s in KNOWN_SKILLS]
     validated_certs = [c for c in found_certs if c in KNOWN_CERTS]
-
-    # rejected = phrases present in text but not in keyword map
-    words = low.split()
-    # simple: any known keyword phrase not matched but text has content -> mark unknown tokens
-    # We report the whole unmatched note chunks as rejected for transparency.
-    rejected_phrases = []
-    # Heuristic: split note by commas/and; check each chunk against matched phrases
-    chunks = [c.strip() for c in text.replace(";", ",").split(",") if c.strip()]
+    rejected = []
+    chunks = [c.strip() for c in (text or "").replace(";", ",").split(",") if c.strip()]
     for ch in chunks:
         cl = ch.lower()
         if not any(p in cl for p in KEYWORD_MAP.keys()):
-            rejected_phrases.append(ch)
-
+            rejected.append(ch)
     return {
         "skills": validated_skills,
         "certs": validated_certs,
         "notes": found_notes,
-        "matched_phrases": matched_phrases,
-        "rejected": rejected_phrases,
+        "matched_phrases": matched,
+        "rejected": rejected,
+        "source": "keyword",
     }
+
+
+def _gemini_parse(text: str) -> Dict[str, List[str]] | None:
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key:
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+            key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        except Exception:
+            pass
+    if not key:
+        return None
+    prompt = (
+        "Extract structured requirements from these CNC manufacturing order notes: " + (text or "") + "\n"
+        "Return ONLY a JSON object (no markdown, no code fences) with keys: skills, certs, notes, rejected.\n"
+        "skills: array of strings, each MUST be one of these exact values or empty: " + json.dumps(sorted(KNOWN_SKILLS)) + "\n"
+        "certs: array of strings, each MUST be one of these exact values or empty: " + json.dumps(sorted(KNOWN_CERTS)) + "\n"
+        "notes: array of other requirement phrases that are not skills/certs.\n"
+        "rejected: array of phrases that matched nothing.\n"
+        "Do not invent new skill or cert names. If unsure, put the phrase in rejected."
+    )
+    try:
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        r = httpx.post(url, params={"key": key}, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=20.0)
+        r.raise_for_status()
+        data = r.json()
+        raw = data["candidates"][0]["content"]["parts"][0]["text"]
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            lines = raw.splitlines()
+            if lines and lines[0].strip().lower() in ("json",):
+                lines = lines[1:]
+            raw = "\n".join(lines)
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            raw = raw.strip()
+        parsed = json.loads(raw)
+    except Exception:
+        return None
+    raw_skills = parsed.get("skills", [])
+    raw_certs = parsed.get("certs", [])
+    notes = parsed.get("notes", [])
+    skills = [s for s in raw_skills if s in KNOWN_SKILLS]
+    certs = [c for c in raw_certs if c in KNOWN_CERTS]
+    rejected = [s for s in raw_skills if s not in KNOWN_SKILLS] + [c for c in raw_certs if c not in KNOWN_CERTS]
+    rejected += [n for n in notes if n.lower() in ("rejected",)]
+    return {
+        "skills": skills,
+        "certs": certs,
+        "notes": notes,
+        "matched_phrases": [],
+        "rejected": rejected,
+        "source": "gemini",
+    }
+
+
+def parse_notes(text: str, use_llm: bool = True) -> Dict[str, List[str]]:
+    if use_llm:
+        res = _gemini_parse(text)
+        if res is not None:
+            return res
+    return _keyword_parse(text)
