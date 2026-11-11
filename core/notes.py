@@ -144,8 +144,11 @@ def gemini_generate(prompt: str) -> str | None:
         r = httpx.post(
             GEMINI_URL,
             headers={"x-goog-api-key": key},
-            json={"model": GEMINI_MODEL, "input": prompt},
-            timeout=60.0,
+            # Low thinking + capped output keep the call well under a minute; the parse
+            # answer is a small JSON object and the explanation is 120-180 words.
+            json={"model": GEMINI_MODEL, "input": prompt,
+                  "generation_config": {"max_output_tokens": 2048, "thinking_level": "low"}},
+            timeout=110.0,
         )
         r.raise_for_status()
         # Interaction resource: text lives in the model_output step's content blocks.
