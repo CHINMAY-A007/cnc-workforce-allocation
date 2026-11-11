@@ -144,7 +144,10 @@ def gemini_generate(prompt: str) -> str | None:
         )
         r.raise_for_status()
         return r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception:
+    except Exception as e:
+        # diagnostics only: exception class and HTTP status, never the key or body
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        print(f"[gemini] call failed: {type(e).__name__} status={status}")
         return None
 
 
