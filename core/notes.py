@@ -140,7 +140,7 @@ def gemini_generate(prompt: str) -> str | None:
             GEMINI_URL,
             params={"key": key},
             json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=20.0,
+            timeout=60.0,
         )
         r.raise_for_status()
         return r.json()["candidates"][0]["content"]["parts"][0]["text"]
