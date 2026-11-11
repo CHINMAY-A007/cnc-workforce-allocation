@@ -350,6 +350,48 @@ async def api_material_update(mid: str, request: Request):
     return {"ok": True}
 
 
+# ---------- master data entry (manager-editable) ----------
+@app.post("/api/materials")
+async def api_material_create(request: Request):
+    role = need(request, "policy")
+    d = await body(request)
+    return S.create_material(DB, role, role, d)
+
+
+@app.get("/api/work-centers")
+def api_work_centers():
+    conn = get_conn(DB)
+    rows = [dict(r) for r in conn.execute("SELECT * FROM work_centers ORDER BY kind, id").fetchall()]
+    conn.close()
+    return rows
+
+
+@app.post("/api/work-centers")
+async def api_work_center_create(request: Request):
+    role = need(request, "policy")
+    d = await body(request)
+    return S.create_work_center(DB, role, role, d)
+
+
+@app.post("/api/employees")
+async def api_employee_create(request: Request):
+    role = need(request, "workforce")
+    d = await body(request)
+    return S.create_employee(DB, role, role, d)
+
+
+@app.post("/api/products")
+async def api_product_create(request: Request):
+    role = need(request, "policy")
+    d = await body(request)
+    return S.create_product(DB, role, role, d)
+
+
+@app.get("/api/master-data")
+def api_master_data():
+    return S.master_data_options(DB)
+
+
 # ---------- planning ----------
 @app.post("/api/plan")
 async def api_plan(request: Request):

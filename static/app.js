@@ -155,7 +155,7 @@ PAGES.home = async (p) => {
 
 /* ---------- ORDERS ---------- */
 PAGES.orders = async (p) => {
-  const [orders, prods] = await Promise.all([get("/api/orders"), get("/api/products")]);
+  const [orders, prods, md] = await Promise.all([get("/api/orders"), get("/api/products"), get("/api/master-data")]);
   const s = ST.state;
   const sel = ST.arg && ST.arg !== "new" ? ST.arg : null;
   p.innerHTML = `<h1>Orders and Tasks</h1><p class="help">Orders arrive from the Simulated ERP. Each order is turned into jobs automatically using the product's routing. Add an order below, then open its jobs to see who can do each one.</p>
@@ -175,7 +175,18 @@ PAGES.orders = async (p) => {
     <label class="f">Customer commitment<input id="nc" placeholder="e.g. Aero customer, firm date" maxlength="80"></label></div>
   <div><label class="f">Notes (optional)<textarea id="nn" rows="5" maxlength="500" placeholder="Certified inspector only, surface finish N6, gift wrap please"></textarea></label>
     <p class="note info" style="font-size:14px">Note reader: <b>${esc(s.note_reader.label)}</b>. It matches known words only. It does not understand free language and can miss other phrasings. Anything it does not recognise is shown to you and never applied.</p>
-    <button id="fill">Fill the demo example</button> <button class="primary big" id="create">Create order</button><div id="newres"></div></div></div></div>`;
+    <button id="fill">Fill the demo example</button> <button class="primary big" id="create">Create order</button><div id="newres"></div></div></div></div>
+  <div class="card" id="prodbox"><h2>Add a new product</h2><p class="help" style="margin-bottom:10px">A product is its material plus the operations (routing) that make it. Once saved it can be ordered like any other product, and every requirement, shortage and schedule is calculated from what you enter here. Adding products needs the Production Manager or ERP Administrator role.</p>
+  <div class="row"><div>
+    <label class="f">Product name<input id="pn" placeholder="e.g. Copper Electrode" maxlength="80"></label>
+    <label class="f">Material<select id="pm">${md.materials.map((m) => `<option>${esc(m)}</option>`).join("")}</select></label>
+    <label class="f">Material per piece<input id="pmpu" type="number" min="0.1" step="0.1" value="1"></label>
+    <p class="muted" style="font-size:13px">Material not listed? Add it on the Resource Analysis page first.</p></div>
+  <div><h3 style="margin:4px 0">Operations (in the order they run)</h3><div class="tw"><table><thead><tr><th>#</th><th>Operation</th><th>Machine type</th><th>Minutes</th><th>Setup</th><th>Skill (level)</th><th>Role</th><th>People</th><th>Quality gate</th><th>Runs after</th></tr></thead><tbody id="oprows"></tbody></table></div>
+    <p style="margin-top:8px"><button id="opadd">Add operation</button> <button class="primary" id="psave">Save product</button></p><div id="pres"></div></div></div>
+  <datalist id="dlkinds">${md.machine_kinds.map((k) => `<option value="${esc(k)}">`).join("")}</datalist>
+  <datalist id="dlskills">${md.skills.map((s) => `<option value="${esc(s)}">`).join("")}</datalist>
+  <datalist id="dlroles">${md.roles.map((r) => `<option value="${esc(r)}">`).join("")}</datalist></div>`;
   p.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => showTasks(b.dataset.open)));
   p.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => guard(async () => { modal(`<h2>Remove ${esc(b.dataset.del)}?</h2><p>The order and its jobs are removed. This is recorded in the audit log.</p><button class="danger" id="dy">Remove</button> <button id="dn">Cancel</button>`); $("#dn").onclick = closeModal; $("#dy").onclick = () => guard(async () => { await api("DELETE", "/api/orders/" + b.dataset.del); closeModal(); toast("Order removed.", "ok"); render(); }); })));
   $("#fill").onclick = () => { $("#np").value = "P-ALU-FLANGE"; $("#nq").value = 8; $("#npr").value = "Urgent"; $("#nc").value = "Aero customer, urgent"; $("#nn").value = "Certified inspector only, surface finish N6, gift wrap please"; const d = new Date(s.horizon_start + "T00:00:00"); d.setDate(d.getDate() + 4); if (d.getDay() === 0) d.setDate(d.getDate() + 1); $("#nd").value = d.toISOString().slice(0, 10); };
@@ -187,6 +198,23 @@ PAGES.orders = async (p) => {
     $("#newres").innerHTML = `<div class="note good"><b>Order ${esc(r.order_id)} created</b> with ${r.task_count} jobs.</div>` + (pn ? `<div class="note info"><b>What the note reader found</b> (${esc(pn.source === "gemini" ? "AI-assisted" : "keyword reader")}):<br>Added: ${[...pn.required_skills, ...pn.required_certifications, ...pn.special_notes].map((x) => chip("blue", x)).join(" ") || "nothing"}<br>Not recognised, not applied: ${pn.rejected.length ? pn.rejected.map((x) => chip("amber", x)).join(" ") : "nothing"}<br><span class="muted">Skills and certificates are applied to the matching jobs. Surface finish is kept as a note for people.</span></div>` : "");
     toast("Order created. Next: generate the schedule.", "ok"); await refreshState(); ST.newOrder = r.order_id;
     const t = $("#tasks"); showTasks(r.order_id, true);
+  });
+  let opN = 0;
+  const opRow = () => { opN += 1; const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="opn">${opN}</td><td><input class="op-name" placeholder="e.g. Wire EDM" style="width:130px"></td><td><input class="op-kind" list="dlkinds" style="width:100px"></td><td><input class="op-dur" type="number" min="1" max="480" value="20" style="width:70px"></td><td><input class="op-setup" type="number" min="0" max="240" value="0" style="width:60px"></td><td><input class="op-skill" list="dlskills" style="width:120px"> <input class="op-lvl" type="number" min="0" max="5" value="2" style="width:50px"></td><td><input class="op-role" list="dlroles" style="width:150px"></td><td><input class="op-mp" type="number" min="1" max="4" value="1" style="width:50px"></td><td class="c"><input class="op-qg" type="checkbox"></td><td><input class="op-dep" placeholder="e.g. 1,2" style="width:70px"></td>`;
+    $("#oprows").appendChild(tr); };
+  opRow(); opRow();
+  $("#opadd").onclick = opRow;
+  $("#psave").onclick = () => guard(async () => {
+    const rows = [...$("#oprows").querySelectorAll("tr")];
+    const routing = rows.map((tr, i) => ({ operation: $(".op-name", tr).value.trim(), work_center_kind: $(".op-kind", tr).value.trim(),
+      duration_min: +$(".op-dur", tr).value, setup_min: +$(".op-setup", tr).value, required_skill: $(".op-skill", tr).value.trim(),
+      min_level: +$(".op-lvl", tr).value, required_role: $(".op-role", tr).value.trim(), multi_person: +$(".op-mp", tr).value,
+      is_quality_gate: $(".op-qg", tr).checked,
+      depends_on: $(".op-dep", tr).value.split(",").map((x) => parseInt(x.trim(), 10)).filter((x) => Number.isInteger(x)) }));
+    const r = await post("/api/products", { name: $("#pn").value.trim(), material: $("#pm").value, material_per_unit: +$("#pmpu").value, routing }, "Saving product...");
+    $("#pres").innerHTML = `<div class="note good"><b>${esc(r.product_id)}</b> saved with ${r.operations} operations. It now appears in the product list above and in new orders.</div>`;
+    toast("Product saved.", "ok");
   });
   if (sel) showTasks(sel); else if (ST.arg === "new") $("#newbox").scrollIntoView({ behavior: "smooth" });
   async function showTasks(oid) {
@@ -212,7 +240,7 @@ async function eligibility(tid) {
 
 /* ---------- WORKFORCE ---------- */
 PAGES.workforce = async (p) => {
-  const w = await get("/api/workforce");
+  const [w, md] = await Promise.all([get("/api/workforce"), get("/api/master-data")]);
   const edit = ST.role === "HR/Workforce Admin" || isManager();
   const CS = { expired: ["red", "Expired", "<i class=ic-cross></i>"], "expiring soon": ["amber", "Expiring soon", "<i class=ic-warn></i>"], valid: ["green", "Valid", "<i class=ic-check></i>"] };
   p.innerHTML = `<h1>Workforce and Skill Matrix</h1><p class="help">Who works here, what they are good at (level 1 to 5) and whether their certificates are valid. Darker blue means higher skill. Certificates that are expired or expiring soon are flagged, and expired ones remove the person from matching jobs.</p>
@@ -221,10 +249,36 @@ PAGES.workforce = async (p) => {
   <div class="card"><h2>Certificates and leave</h2><p class="muted">Reference date: ${esc(fmtDate(w.reference_date))} (first planning day).</p><div class="tw"><table><thead><tr><th>Person</th><th>Certificate</th><th>Expires</th><th>Status</th><th>Leave days</th></tr></thead><tbody>
   ${w.employees.filter((e) => e.certs.length || e.leave_dates.length).map((e) => e.certs.map((c, i) => `<tr><td>${i ? "" : "<b>" + esc(e.name) + "</b>"}</td><td>${esc(c.cert)}</td><td>${esc(fmtDate(c.expires_on))}</td><td>${chip(CS[c.state][0], CS[c.state][1] + (c.state === "expiring soon" ? ` (${c.days_left} days)` : ""), CS[c.state][2])}</td><td>${i ? "" : e.leave_dates.map((d) => esc(fmtDate(d))).join(", ") || "-"}</td></tr>`).join("") || `<tr><td><b>${esc(e.name)}</b></td><td colspan="3" class="muted">No certificates</td><td>${e.leave_dates.map((d) => esc(fmtDate(d))).join(", ")}</td></tr>`).join("")}</tbody></table></div></div>
   <div class="card"><h2>Edit workforce</h2>${edit ? `<p class="help" style="margin-bottom:8px">HR / Workforce Admin and the Production Manager can change skill levels and leave. Changes apply to the next schedule you generate and are recorded.</p><div class="row"><label class="f">Person<select id="ep">${w.employees.map((e) => `<option value="${esc(e.id)}">${esc(e.name)}</option>`).join("")}</select></label><label class="f">Skill<select id="es">${w.skills.map((s) => `<option>${esc(s)}</option>`).join("")}</select></label><label class="f">New level (0 removes it)<input id="el" type="number" min="0" max="5" value="3"></label></div><button id="esave">Save skill level</button>
-  <div class="row" style="margin-top:14px"><label class="f">Add a leave day<input id="ed" type="date"></label><label class="f">&nbsp;<button id="eleave">Add leave day</button></label></div>` : `<p class="muted">Only the HR / Workforce Admin or Production Manager role can edit. Switch role at the bottom left.</p>`}</div>`;
+  <div class="row" style="margin-top:14px"><label class="f">Add a leave day<input id="ed" type="date"></label><label class="f">&nbsp;<button id="eleave">Add leave day</button></label></div>
+  <hr style="margin:16px 0"><h3 style="margin:0 0 8px">Add a person</h3><p class="help" style="margin-bottom:8px">New people join the skill matrix and can be matched to jobs by role, skill and shift.</p>
+  <div class="row"><div>
+    <label class="f">Name<input id="hn" placeholder="Full name" maxlength="60"></label>
+    <label class="f">Job role<input id="hr" list="dlroles" placeholder="e.g. EDM Operator"></label>
+    <label class="f">Team<input id="ht" list="dlteams" placeholder="e.g. Turning"></label>
+    <label class="f">Shift<select id="hs">${md.shifts.map((s) => `<option>${esc(s)}</option>`).join("")}</select></label></div>
+  <div>
+    <label class="f">Hours per day (4-12)<input id="hh" type="number" min="4" max="12" step="0.5" value="8"></label>
+    <label class="f">Overtime cap, h/day (0-8)<input id="ho" type="number" min="0" max="8" step="0.5" value="2"></label>
+    <h4 style="margin:10px 0 4px">Skills (optional)</h4><div id="hskills"></div><button class="sm" id="hskadd">Add skill</button>
+    <h4 style="margin:10px 0 4px">Certificates (optional)</h4><div id="hcerts"></div><button class="sm" id="hceadd">Add certificate</button>
+    <p style="margin-top:10px"><button class="primary" id="hsave">Add person</button></p><div id="hres"></div></div></div>
+  <datalist id="dlroles">${md.roles.map((r) => `<option value="${esc(r)}">`).join("")}</datalist>
+  <datalist id="dlteams">${md.teams.map((t) => `<option value="${esc(t)}">`).join("")}</datalist>
+  <datalist id="dlskills">${md.skills.map((s) => `<option value="${esc(s)}">`).join("")}</datalist>` : `<p class="muted">Only the HR / Workforce Admin or Production Manager role can edit. Switch role at the bottom left.</p>`}</div>`;
   if (edit) {
     $("#esave").onclick = () => guard(async () => { await post("/api/employees/" + $("#ep").value, { skill: $("#es").value, level: $("#el").value }); toast("Skill level saved.", "ok"); render(); });
     $("#eleave").onclick = () => guard(async () => { const e = w.employees.find((x) => x.id === $("#ep").value); if (!$("#ed").value) throw new Error("Pick a date first."); await post("/api/employees/" + e.id, { leave_dates: [...e.leave_dates, $("#ed").value] }); toast("Leave day added.", "ok"); render(); });
+    const skRow = () => { const d = document.createElement("div"); d.className = "row"; d.style.marginBottom = "4px"; d.innerHTML = `<label class="f">Skill<input class="hsk" list="dlskills" style="width:170px"></label><label class="f">Level 1-5<input class="hsl" type="number" min="1" max="5" value="3" style="width:70px"></label>`; $("#hskills").appendChild(d); };
+    const ceRow = () => { const d = document.createElement("div"); d.className = "row"; d.style.marginBottom = "4px"; d.innerHTML = `<label class="f">Certificate<input class="hce" placeholder="e.g. CMM Cert" style="width:170px"></label><label class="f">Expires<input class="hcx" type="date"></label>`; $("#hcerts").appendChild(d); };
+    $("#hskadd").onclick = skRow; $("#hceadd").onclick = ceRow; skRow();
+    $("#hsave").onclick = () => guard(async () => {
+      const skills = [...$("#hskills").querySelectorAll(".row")].map((d) => ({ skill: $(".hsk", d).value.trim(), level: +$(".hsl", d).value })).filter((s) => s.skill);
+      const certs = [...$("#hcerts").querySelectorAll(".row")].map((d) => ({ cert: $(".hce", d).value.trim(), expires_on: $(".hcx", d).value })).filter((c) => c.cert);
+      const r = await post("/api/employees", { name: $("#hn").value.trim(), role: $("#hr").value.trim(), team: $("#ht").value.trim(), shift: $("#hs").value,
+        max_daily_hours: +$("#hh").value, overtime_cap_hours: +$("#ho").value, skills, certs }, "Adding person...");
+      $("#hres").innerHTML = `<div class="note good"><b>${esc($("#hn").value)}</b> added (${esc(r.employee_id)}). They now appear in the matrix and can be matched to jobs.</div>`;
+      toast("Person added.", "ok");
+    });
   }
 };
 

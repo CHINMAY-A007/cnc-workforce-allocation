@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -646,3 +647,203 @@ def delete_order(db, actor, role, oid):
     conn.commit()
     conn.close()
     log_action(actor, role, "delete_order", oid, reason="removed by user", db_path=db)
+
+
+# ---------- master data entry (manager-editable) ----------
+def _slug(text: str, max_len: int = 20) -> str:
+    s = re.sub(r"[^A-Z0-9]+", "-", (text or "").upper()).strip("-")
+    return s[:max_len].strip("-")
+
+
+def create_material(db, actor, role, data: dict) -> dict:
+    mid = (data.get("id") or "").strip()[:40]
+    if not mid:
+        raise ApiError("Material name is required.")
+    unit = (data.get("unit") or "units").strip()[:20] or "units"
+    try:
+        qty = float(data.get("on_hand") if data.get("on_hand") is not None else 0)
+        assert 0 <= qty <= 100000
+    except Exception:
+        raise ApiError("Stock on hand must be a number from 0 to 100000.")
+    conn = get_conn(db)
+    if conn.execute("SELECT 1 FROM materials WHERE lower(id)=lower(?)", (mid,)).fetchone():
+        conn.close()
+        raise ApiError(f"A material called '{mid}' already exists. Update its stock instead.")
+    conn.execute("INSERT INTO materials (id,on_hand,unit) VALUES (?,?,?)", (mid, qty, unit))
+    conn.commit()
+    conn.close()
+    log_action(actor, role, "material_add", mid, after={"on_hand": qty, "unit": unit}, reason=data.get("reason") or "new material", db_path=db)
+    return {"material_id": mid}
+
+
+def create_work_center(db, actor, role, data: dict) -> dict:
+    name = (data.get("name") or "").strip()[:60]
+    kind = (data.get("kind") or "").strip()[:40]
+    if not name:
+        raise ApiError("Machine name is required.")
+    if not kind:
+        raise ApiError("Machine type is required (the routing's machine type must match this).")
+    try:
+        cap = int(data.get("capacity") or 1)
+        assert 1 <= cap <= 20
+    except Exception:
+        raise ApiError("Capacity must be a whole number from 1 to 20.")
+    conn = get_conn(db)
+    base = _slug(kind) or "WC"
+    wid, n = base + "-1", 1
+    while conn.execute("SELECT 1 FROM work_centers WHERE id=?", (wid,)).fetchone():
+        n += 1
+        wid = f"{base}-{n}"
+    if conn.execute("SELECT 1 FROM work_centers WHERE lower(name)=lower(?)", (name,)).fetchone():
+        conn.close()
+        raise ApiError(f"A machine called '{name}' already exists.")
+    conn.execute("INSERT INTO work_centers (id,name,kind,capacity,down) VALUES (?,?,?,1,0)", (wid, name, kind))
+    conn.commit()
+    conn.close()
+    log_action(actor, role, "work_center_add", wid, after={"name": name, "kind": kind}, reason=data.get("reason") or "new machine", db_path=db)
+    return {"work_center_id": wid}
+
+
+def create_employee(db, actor, role, data: dict) -> dict:
+    name = (data.get("name") or "").strip()[:60]
+    if not name:
+        raise ApiError("Name is required.")
+    job_role = (data.get("role") or "").strip()[:60]
+    if not job_role:
+        raise ApiError("Job role is required (jobs name the role they need).")
+    team = (data.get("team") or "").strip()[:40] or "General"
+    conn = get_conn(db)
+    shifts = [r[0] for r in conn.execute("SELECT DISTINCT shift FROM employees ORDER BY shift").fetchall()]
+    shift = (data.get("shift") or "").strip()[:10]
+    if shift not in shifts:
+        conn.close()
+        raise ApiError(f"Shift must be one of the existing shifts: {', '.join(shifts)}.")
+    try:
+        maxh = float(data.get("max_daily_hours") or 8)
+        assert 4 <= maxh <= 12
+        otc = float(data.get("overtime_cap_hours") if data.get("overtime_cap_hours") is not None else 2)
+        assert 0 <= otc <= 8
+    except Exception:
+        conn.close()
+        raise ApiError("Daily hours must be 4 to 12 and the overtime cap 0 to 8.")
+    skills = data.get("skills") or []
+    if not isinstance(skills, list) or len(skills) > 10:
+        conn.close()
+        raise ApiError("Skills must be a list of at most 10 entries.")
+    certs = data.get("certs") or []
+    if not isinstance(certs, list) or len(certs) > 10:
+        conn.close()
+        raise ApiError("Certificates must be a list of at most 10 entries.")
+    eid = None
+    nums = [int(m.group(1)) for r in conn.execute("SELECT id FROM employees").fetchall() if (m := re.match(r"^E(\d+)$", r[0]))]
+    if nums:
+        eid = f"E{max(nums) + 1:02d}"
+    if not eid:
+        eid = "E-" + uuid.uuid4().hex[:4].upper()
+    conn.execute("INSERT INTO employees (id,name,role,team,shift,max_daily_hours,overtime_cap_hours,active,leave_dates) VALUES (?,?,?,?,?,?,?,1,'[]')",
+                 (eid, name, job_role, team, shift, maxh, otc))
+    for s in skills:
+        sk = (s.get("skill") or "").strip()[:60]
+        if not sk:
+            continue
+        try:
+            lvl = int(s.get("level"))
+            assert 1 <= lvl <= 5
+        except Exception:
+            conn.close()
+            raise ApiError("Skill level must be 1 to 5.")
+        conn.execute("INSERT OR REPLACE INTO skills (employee_id,skill,level) VALUES (?,?,?)", (eid, sk, lvl))
+    for c in certs:
+        cn = (c.get("cert") or "").strip()[:60]
+        if not cn:
+            continue
+        try:
+            datetime.strptime(c.get("expires_on") or "", "%Y-%m-%d")
+        except Exception:
+            conn.close()
+            raise ApiError(f"Certificate '{cn}' needs an expiry date (YYYY-MM-DD).")
+        conn.execute("INSERT OR REPLACE INTO certs (employee_id,cert,expires_on) VALUES (?,?,?)", (eid, cn, c["expires_on"]))
+    conn.commit()
+    conn.close()
+    log_action(actor, role, "employee_add", eid, after={"name": name, "role": job_role, "shift": shift},
+               reason=data.get("reason") or "new hire", db_path=db)
+    return {"employee_id": eid}
+
+
+def create_product(db, actor, role, data: dict) -> dict:
+    name = (data.get("name") or "").strip()[:80]
+    if not name:
+        raise ApiError("Product name is required.")
+    conn = get_conn(db)
+    material = (data.get("material") or "").strip()[:40]
+    if not conn.execute("SELECT 1 FROM materials WHERE id=?", (material,)).fetchone():
+        conn.close()
+        raise ApiError("Please choose a material. Add it first under Resource Analysis if it is new.")
+    try:
+        mpu = float(data.get("material_per_unit"))
+        assert 0 < mpu <= 1000
+    except Exception:
+        conn.close()
+        raise ApiError("Material per piece must be a number greater than 0 (and at most 1000).")
+    ops = data.get("routing") or []
+    if not isinstance(ops, list) or not 1 <= len(ops) <= 15:
+        conn.close()
+        raise ApiError("A product needs 1 to 15 routing operations, in the order they run.")
+    clean = []
+    for i, op in enumerate(ops):
+        seq = i + 1
+        oname = (op.get("operation") or "").strip()[:60]
+        kind = (op.get("work_center_kind") or "").strip()[:40]
+        skill = (op.get("required_skill") or "").strip()[:60]
+        rrole = (op.get("required_role") or "").strip()[:60]
+        if not oname or not kind or not skill or not rrole:
+            conn.close()
+            raise ApiError(f"Operation {seq}: name, machine type, skill and role are all required.")
+        try:
+            dur = int(op.get("duration_min"))
+            assert 1 <= dur <= 480
+            setup = int(op.get("setup_min") or 0)
+            assert 0 <= setup <= 240
+            lvl = int(op.get("min_level"))
+            assert 0 <= lvl <= 5
+            mp = int(op.get("multi_person") or 1)
+            assert 1 <= mp <= 4
+        except Exception:
+            conn.close()
+            raise ApiError(f"Operation {seq}: duration 1-480 min, setup 0-240, skill level 0-5, people 1-4.")
+        deps = op.get("depends_on") or []
+        if not isinstance(deps, list) or any((not isinstance(d, int)) or d < 1 or d >= seq for d in deps):
+            conn.close()
+            raise ApiError(f"Operation {seq}: 'runs after' may only list earlier operation numbers.")
+        clean.append((seq, oname, kind, dur, setup, skill, lvl, rrole, mp, 1 if op.get("is_quality_gate") else 0, json.dumps(deps)))
+    base = "P-" + (_slug(name) or "PART")
+    pid, n = base, 1
+    while conn.execute("SELECT 1 FROM products WHERE id=?", (pid,)).fetchone():
+        n += 1
+        pid = f"{base}-{n}"
+    conn.execute("INSERT INTO products (id,name,material) VALUES (?,?,?)", (pid, name, material))
+    conn.execute("UPDATE products SET material_per_unit=? WHERE id=?", (mpu, pid))
+    for op in clean:
+        conn.execute(
+            "INSERT INTO routing_ops (product_id,seq,operation,work_center_kind,duration_min,setup_min,required_skill,min_level,required_role,multi_person,is_quality_gate,depends_on) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (pid, *op))
+    conn.commit()
+    conn.close()
+    log_action(actor, role, "product_add", pid, after={"name": name, "material": material, "ops": len(clean)},
+               reason=data.get("reason") or "new product", db_path=db)
+    return {"product_id": pid, "operations": len(clean)}
+
+
+def master_data_options(db) -> dict:
+    """Dropdown values for the master-data forms (existing names, to help avoid typos)."""
+    conn = get_conn(db)
+    out = {
+        "materials": [r[0] for r in conn.execute("SELECT id FROM materials ORDER BY id").fetchall()],
+        "machine_kinds": [r[0] for r in conn.execute("SELECT DISTINCT kind FROM work_centers ORDER BY kind").fetchall()],
+        "roles": [r[0] for r in conn.execute("SELECT DISTINCT role FROM employees ORDER BY role").fetchall()],
+        "shifts": [r[0] for r in conn.execute("SELECT DISTINCT shift FROM employees ORDER BY shift").fetchall()],
+        "teams": [r[0] for r in conn.execute("SELECT DISTINCT team FROM employees ORDER BY team").fetchall()],
+        "skills": [r[0] for r in conn.execute("SELECT DISTINCT skill FROM skills ORDER BY skill").fetchall()],
+    }
+    conn.close()
+    return out

@@ -107,7 +107,13 @@ def task_candidates(task: dict, d: date, ctx: Context, absent: Optional[set] = N
 
 def skill_matrix(db_path=None) -> Dict[str, Any]:
     ctx = Context(db_path)
-    skills = ["CNC Turning", "VMC Milling", "5-Axis Programming", "Titanium Machining", "Setup", "CMM Inspection", "Deburring", "Packing"]
+    base = ["CNC Turning", "VMC Milling", "5-Axis Programming", "Titanium Machining", "Setup", "CMM Inspection", "Deburring", "Packing"]
+    seen = {s for lv in ctx.skills.values() for s in lv}
+    from core.db import get_conn as _gc
+    _c = _gc(db_path)
+    seen |= {r[0] for r in _c.execute("SELECT DISTINCT required_skill FROM routing_ops").fetchall()}
+    _c.close()
+    skills = base + sorted(s for s in seen if s not in set(base))
     emps = []
     for eid, e in ctx.emps.items():
         certs = []

@@ -218,6 +218,7 @@ PAGES.resources = async (p) => {
   const sel = ST.arg && open.find((o) => o.id === ST.arg) ? ST.arg : "";
   const a = await get("/api/analysis" + (sel ? "?order_id=" + encodeURIComponent(sel) : ""));
   const mats = await get("/api/materials");
+  const md = await get("/api/master-data");
   const canEditStock = ["Production Manager", "ERP Administrator"].includes(ST.role);
   const GROUP = { machines: "Machines", people: "People", materials: "Raw materials" };
   const stBadge = (r) => r.status === "short"
@@ -252,7 +253,11 @@ PAGES.resources = async (p) => {
 
   <div class="card"><h2>Raw material stock (simulated ERP inventory)</h2><div class="tw"><table><thead><tr><th>Material</th><th>On hand</th><th>Reserved by approved schedule</th><th>Available</th>${canEditStock ? "<th></th>" : ""}</tr></thead><tbody>
   ${mats.map((m) => `<tr><td><b>${esc(m.id)}</b></td><td>${m.on_hand} ${esc(m.unit)}</td><td>${m.reserved}</td><td>${m.available}</td>${canEditStock ? `<td><button class="sm" data-m="${esc(m.id)}" data-q="${m.on_hand}">Update stock</button></td>` : ""}</tr>`).join("")}
-  </tbody></table></div><p class="muted">Reservations are written when a schedule is approved, after availability is revalidated at approval time. Illustrative figures.</p></div>`;
+  </tbody></table></div><p class="muted">Reservations are written when a schedule is approved, after availability is revalidated at approval time. Illustrative figures.</p>
+  ${canEditStock ? `<hr style="margin:14px 0"><h3 style="margin:0 0 8px">Add a material</h3><div class="row"><label class="f">Name<input id="nmat" placeholder="e.g. Copper" maxlength="40"></label><label class="f">On hand<input id="nmatq" type="number" min="0" max="100000" value="0"></label><label class="f">Unit<input id="nmatu" value="units" maxlength="20"></label><label class="f">&nbsp;<button id="nmatb">Add material</button></label></div>
+  <h3 style="margin:14px 0 8px">Add a machine</h3><div class="row"><label class="f">Name<input id="nwc" placeholder="e.g. Wire EDM 1" maxlength="60"></label><label class="f">Machine type<input id="nwck" list="dlkinds" placeholder="e.g. EDM"></label><label class="f">&nbsp;<button id="nwcb">Add machine</button></label></div>
+  <p class="muted" style="font-size:13px">The machine type is what a product routing refers to; new types are fine, but no job can run on a type that has no machine. New materials and machines appear in the analysis above as soon as a product uses them.</p>
+  <datalist id="dlkinds">${md.machine_kinds.map((k) => `<option value="${esc(k)}">`).join("")}</datalist>` : `<p class="muted">Only the Production Manager or ERP Administrator can add materials or machines. Switch role at the bottom left.</p>`}</div>`;
   $("#ra_o").onchange = (e) => { ST.arg = e.target.value || null; render(); };
   $("#aixb").onclick = () => guard(async () => {
     $("#aixs").textContent = "Asking the explainer...";
@@ -260,6 +265,10 @@ PAGES.resources = async (p) => {
     $("#aixs").textContent = "";
     $("#aixr").innerHTML = `<div class="note ${x.source === "gemini" ? "good" : "info"}">${esc(x.text)}<br><span class="muted">${esc(x.label)} Source: ${x.source === "gemini" ? "Gemini AI" : "rule-based writer"}.</span></div>`;
   });
+  if (canEditStock) {
+    $("#nmatb").onclick = () => guard(async () => { await post("/api/materials", { id: $("#nmat").value.trim(), on_hand: +$("#nmatq").value, unit: $("#nmatu").value.trim() }); toast("Material added.", "ok"); render(); });
+    $("#nwcb").onclick = () => guard(async () => { const r = await post("/api/work-centers", { name: $("#nwc").value.trim(), kind: $("#nwck").value.trim() }); toast("Machine " + r.work_center_id + " added.", "ok"); render(); });
+  }
   p.querySelectorAll("[data-m]").forEach((b) => (b.onclick = () => guard(async () => {
     modal(`<h2>Update stock: ${esc(b.dataset.m)}</h2><label class="f">New quantity on hand<input id="msq" type="number" min="0" step="1" value="${esc(b.dataset.q)}"></label><button class="primary" id="msok">Save</button> <button id="msno">Cancel</button>`);
     $("#msno").onclick = closeModal;
