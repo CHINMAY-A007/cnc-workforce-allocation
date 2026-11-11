@@ -13,6 +13,7 @@ from core.db import get_conn
 from core.eligibility import Context, check_employee, task_candidates
 from core.solver import (approved_assignments, delivery_estimates, load_orders, load_tasks, solve, validate_schedule,
                          build_why)
+from core.resources import material_requirement
 from core.tasks import generate_tasks, list_tasks
 
 FAIL_STATUSES = {"INFEASIBLE", "UNKNOWN", "MODEL_INVALID", "EMPTY", "BAD_DATA"}
@@ -175,7 +176,14 @@ def diagnose(db, order_ids, base: dict, absent_days: Optional[dict] = None) -> d
         if tt["fixes"] and "Bring" not in tt["label"]:
             remedies.append(f"{tt['what_if']}: a valid plan exists. Needs the manager's decision.")
     if zero:
-        blockers.append("Hard rule: " + "; ".join(sorted({z['why'] for z in zero})) + ".")
+        blockers.append("Missing skill (true resource deficit): " + "; ".join(sorted({z['why'] for z in zero})) + ".")
+    conn2 = get_conn(db)
+    mat_need = material_requirement(conn2, order_ids)
+    mat_stock = {r["id"]: float(r["on_hand"]) for r in conn2.execute("SELECT * FROM materials").fetchall()}
+    conn2.close()
+    for mat, req in sorted(mat_need.items()):
+        if req > mat_stock.get(mat, 0.0):
+            blockers.append(f"Material constraint: {mat} needs {req:g} units, {mat_stock.get(mat, 0.0):g} in stock.")
     if not remedies:
         remedies.append("No change inside this app can fix this. The missing skill or certificate has to come from outside, for example by adding a qualified person to the workforce list or re-certifying someone. Due dates and overtime do not create a certified worker.")
     return {"status": res["status"], "message": res.get("message", ""), "zero_eligibility": zero, "relaxation_tests": tests,
@@ -299,6 +307,24 @@ def approve(db, actor, role, vid):
     if det["violations"]:
         raise ApiError("This plan breaks hard rules and cannot be approved: " + det["violations"][0], 422, {"violations": det["violations"]})
     event = (det["version"]["meta"] or {}).get("event")
+    # Revalidate raw-material availability at approval time, then write reservations (simulated ERP).
+    covered = sorted({a["order_id"] for a in det["assignments"]})
+    conn = get_conn(db)
+    need_mat = material_requirement(conn, covered)
+    stock = {r["id"]: float(r["on_hand"]) for r in conn.execute("SELECT * FROM materials").fetchall()}
+    conn.close()
+    mat_notes = []
+    for mat, req in sorted(need_mat.items()):
+        on_hand = stock.get(mat, 0.0)
+        if req > on_hand:
+            mat_notes.append(f"{mat}: {req:g} units needed, only {on_hand:g} in stock ({req - on_hand:g} short)")
+            add_alert("material_shortage", "critical",
+                      f"Material shortage at approval: {mat} needs {req:g} units, {on_hand:g} in stock. Reservations were written for available stock only; raise a purchase request for the rest.",
+                      link="resources", db_path=db)
+        else:
+            mat_notes.append(f"{mat}: {req:g} units reserved")
+    log_action(actor, role, "reserve_materials", vid, after=mat_notes,
+               reason="revalidated availability at approval time and wrote reservations", version_id=vid, db_path=db)
     conn = get_conn(db)
     conn.execute("UPDATE schedule_versions SET status='superseded' WHERE status='approved'")
     conn.execute("UPDATE schedule_versions SET status='approved', approved_by=?, approved_at=? WHERE id=?", (role, now_local().isoformat(timespec="seconds"), vid))

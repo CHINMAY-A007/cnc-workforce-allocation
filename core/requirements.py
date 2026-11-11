@@ -21,4 +21,6 @@ FR_TITLES = {
     "FR-13": ("Alerts", "live"),
     "FR-14": ("Reports", "reports"),
     "FR-15": ("Explanations and audit trail", "audit"),
+    "FR-16": ("Resource availability analysis and shortages", "resources"),
+    "FR-17": ("AI recommended actions and material reservation", "resources"),
 }

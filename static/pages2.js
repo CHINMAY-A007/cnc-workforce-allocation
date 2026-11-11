@@ -193,8 +193,8 @@ PAGES.about = async (p) => {
   const r = await get("/api/requirements");
   const screen = { orders: "orders", workforce: "workforce", plan: "plan", gantt: "gantt", approval: "approval", mytasks: "mytasks", live: "live", reports: "reports", audit: "audit" };
   const SC = { orders: "Orders and Tasks", workforce: "Workforce and Skills", plan: "AI Allocation Proposal", gantt: "Schedule Chart", approval: "Approval and Changes", mytasks: "My Tasks", live: "Live Progress and Alerts", reports: "Reports", audit: "Audit and Settings" };
-  const where = { "FR-01": "orders", "FR-02": "orders", "FR-03": "workforce", "FR-04": "workforce", "FR-05": "plan", "FR-06": "plan", "FR-07": "gantt", "FR-08": "plan", "FR-09": "plan", "FR-10": "approval", "FR-11": "mytasks", "FR-12": "live", "FR-13": "live", "FR-14": "reports", "FR-15": "audit" };
-  p.innerHTML = `<h1>How it works and Requirements Coverage</h1><p class="help">The flow in one picture, what is real and what is simulated, and a checklist of the 15 requirements. A requirement gets a green tick only after the built-in self-test has run its check.</p>
+  const where = { "FR-01": "orders", "FR-02": "orders", "FR-03": "workforce", "FR-04": "workforce", "FR-05": "plan", "FR-06": "plan", "FR-07": "gantt", "FR-08": "plan", "FR-09": "plan", "FR-10": "approval", "FR-11": "mytasks", "FR-12": "live", "FR-13": "live", "FR-14": "reports", "FR-15": "audit", "FR-16": "resources", "FR-17": "resources" };
+  p.innerHTML = `<h1>How it works and Requirements Coverage</h1><p class="help">The flow in one picture, what is real and what is simulated, and a checklist of the 17 requirements. A requirement gets a green tick only after the built-in self-test has run its check.</p>
   <div class="card"><h2>The flow</h2><div class="flow" style="color:#16202e">${["Order (Simulated ERP)", "Jobs from the routing", "Who is allowed (skills, certificates, leave)", "Planner (OR-Tools solver)", "Manager approval", "Back to the ERP (simulated)"].map((x, i) => `${i ? '<span class="arrow" style="color:#7b8aa3">&rarr;</span>' : ""}<span class="chip blue" style="font-size:15px;padding:6px 12px">${esc(x)}</span>`).join("")}</div>
   <ul><li><b>The planner</b> is Google OR-Tools CP-SAT, a free optimization engine. It alone decides who does what and when. It never uses an AI chat service.</li><li><b>The note reader</b>: ${esc(ST.state.note_reader.label)}. It only picks out known skills and certificates from a note. It does not understand free language and can miss other phrasings. ${ST.state.note_reader.mode === "keyword" ? "No outside AI service is called." : ""}</li><li><b>Simulated:</b> the ERP is a local database. All people, customers and orders are fictional. The system plans people and work only and never controls a machine.</li><li><b>Assumptions:</b> Monday to Saturday working, Sunday off; Shift A 06:00 to 14:00 and Shift B 14:00 to 22:00; overtime up to 2 hours a day; job time = routing minutes x 4 per lot of 10 pieces plus setup. All of these can be changed in Settings or the config file.</li><li><b>The role switcher</b> is a demonstration of permissions, not real security.</li></ul></div>
   <div class="card"><h2>Requirements checklist</h2><button class="primary" id="vrun">Run the self-test</button> <span class="muted" id="vstat">${r.selftest.state === "running" ? "Running..." : "The self-test runs the whole workflow on a scratch copy. Your demo data is not touched. It takes under a minute."}</span>
@@ -210,3 +210,43 @@ function replanCause(df, r) {
   const b = df.by_cause || {}, o = (b.capacity || 0);
   return `Directly affected jobs: ${b.affected || 0}. Jobs that wait for them in the same order: ${b.follows || 0}.` + (o ? ` ${o} other job(s) also had to move to make room, because no other valid plan existed.` : " No unrelated job moved.");
 }
+
+/* ---------- RESOURCE ANALYSIS ---------- */
+PAGES.resources = async (p) => {
+  const orders = await get("/api/orders");
+  const open = orders.filter((o) => !["Completed", "Cancelled"].includes(o.status));
+  const sel = ST.arg && open.find((o) => o.id === ST.arg) ? ST.arg : "";
+  const a = await get("/api/analysis" + (sel ? "?order_id=" + encodeURIComponent(sel) : ""));
+  const mats = await get("/api/materials");
+  const canEditStock = ["Production Manager", "ERP Administrator"].includes(ST.role);
+  const GROUP = { machines: "Machines", people: "People", materials: "Raw materials" };
+  const stBadge = (r) => r.status === "short"
+    ? (String(r.verdict || "").startsWith("true deficit") ? chip("red", r.shortage + " missing", "<i class=ic-cross></i>") : chip("amber", r.shortage + " short at peak", "<i class=ic-warn></i>"))
+    : chip("green", "Sufficient", "<i class=ic-check></i>");
+  const overall = a.overall_status.startsWith("Insufficient") ? chip("red", a.overall_status, "<i class=ic-cross></i>") : a.overall_status.startsWith("Sufficient,") ? chip("amber", a.overall_status, "<i class=ic-warn></i>") : chip("green", a.overall_status, "<i class=ic-check></i>");
+  p.innerHTML = `<h1>Resource Analysis and Recommendations</h1><p class="help">Before production is approved: what each order needs, what is actually available, the exact shortage, and what to do about it. ${esc(a.disclaimer)}</p>
+  <div class="card"><div class="row" style="align-items:end"><label class="f" style="margin:0">Analyse<select id="ra_o"><option value="">All open orders (${open.length})</option>${open.map((o) => `<option value="${esc(o.id)}" ${o.id === sel ? "selected" : ""}>${esc(o.id)} - ${esc(o.product_name)} (qty ${o.quantity})</option>`).join("")}</select></label>
+  <div>${overall}<br><span class="muted">${esc(a.scope.task_count)} jobs across ${a.scope.order_count} order(s)</span></div></div>
+  <p style="margin:10px 0 0"><b>${esc(a.summary)}</b></p></div>
+
+  <div class="card"><h2>1. Resource availability analysis</h2><p class="muted" style="margin-top:0">${esc(a.method)}</p><div class="tw"><table><thead><tr><th>Resource</th><th>Required</th><th>Available</th><th>Shortage / status</th><th>When it bites</th><th>Reading</th></tr></thead><tbody>
+  ${a.rows.map((r) => `<tr><td><b>${esc(r.resource)}</b><br><span class="muted" style="font-size:13px">${esc(GROUP[r.group])} &middot; ${esc(r.detail || "")}</span></td><td>${r.required}</td><td>${r.available}${r.group === "materials" ? ` <span class="muted">(${r.on_hand} on hand${r.reserved ? `, ${r.reserved} reserved` : ""})</span>` : ""}</td><td>${stBadge(r)}</td><td class="nowrap">${r.window ? esc(r.window.start) + " to " + esc(r.window.end) : "-"}</td><td style="font-size:14px">${esc(r.verdict || "")}${r.reasons && r.reasons.length ? `<br><span class="muted">${r.reasons.slice(0, 4).map(esc).join("; ")}</span>` : ""}</td></tr>`).join("")}
+  </tbody></table></div></div>
+
+  <div class="card"><h2>2. AI recommended actions</h2><p class="muted" style="margin-top:0">Recommendations only. Nothing below is applied or booked by itself; the manager approves a schedule, and only then are people, machines and material reserved. Every decision is recorded in the audit log.</p>
+  ${a.recommendations.length ? a.recommendations.map((r) => `<div class="note ${r.severity === "critical" ? "bad" : r.severity === "warning" ? "warn" : "info"}"><b>${esc(r.resource)}</b><ul style="margin:6px 0 0">${r.actions.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`).join("") : '<p class="muted">No recommendations needed for the selected orders.</p>'}</div>
+
+  <div class="card"><h2>3. Schedule impact</h2><p class="muted" style="margin-top:0">${esc(a.schedule_impact.note)}</p>
+  ${a.schedule_impact.orders.length ? `<div class="row">${a.schedule_impact.orders.map((o) => `<div class="ocard ${o.status}"><b>${esc(o.order_id)}</b> ${prio(o.priority)}<br>${badge(o.status)}<br>Finishes <b>${esc(o.finish_text)}</b><br><span class="muted">Due ${esc(fmtDate(o.due_date))}${o.hours_late ? ` &middot; ${o.hours_late} h late` : ""}</span></div>`).join("")}</div>` : ""}
+  <div style="margin-top:10px"><button class="primary" onclick="go('plan')">Recalculate the schedule</button> <button onclick="go('approval')">Go to approval</button></div></div>
+
+  <div class="card"><h2>Raw material stock (simulated ERP inventory)</h2><div class="tw"><table><thead><tr><th>Material</th><th>On hand</th><th>Reserved by approved schedule</th><th>Available</th>${canEditStock ? "<th></th>" : ""}</tr></thead><tbody>
+  ${mats.map((m) => `<tr><td><b>${esc(m.id)}</b></td><td>${m.on_hand} ${esc(m.unit)}</td><td>${m.reserved}</td><td>${m.available}</td>${canEditStock ? `<td><button class="sm" data-m="${esc(m.id)}" data-q="${m.on_hand}">Update stock</button></td>` : ""}</tr>`).join("")}
+  </tbody></table></div><p class="muted">Reservations are written when a schedule is approved, after availability is revalidated at approval time. Illustrative figures.</p></div>`;
+  $("#ra_o").onchange = (e) => { ST.arg = e.target.value || null; render(); };
+  p.querySelectorAll("[data-m]").forEach((b) => (b.onclick = () => guard(async () => {
+    modal(`<h2>Update stock: ${esc(b.dataset.m)}</h2><label class="f">New quantity on hand<input id="msq" type="number" min="0" step="1" value="${esc(b.dataset.q)}"></label><button class="primary" id="msok">Save</button> <button id="msno">Cancel</button>`);
+    $("#msno").onclick = closeModal;
+    $("#msok").onclick = () => guard(async () => { await post("/api/materials/" + encodeURIComponent(b.dataset.m), { on_hand: +$("#msq").value, reason: "stock correction" }); closeModal(); toast("Stock updated and recorded.", "ok"); render(); });
+  })));
+};

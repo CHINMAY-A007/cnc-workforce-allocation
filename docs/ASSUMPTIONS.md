@@ -5,3 +5,5 @@
 - The ERP is a local SQLite database with fictional data. Nothing controls a machine.
 - Roles are a demo of permissions, not authentication.
 - Planning window is one week from the next working day (14 days is offered as a what-if when a week is not enough).
+- Raw-material stock is illustrative demo data (units per piece by product; one material is deliberately short so the shortage flow is visible). Material "reservations" are written on schedule approval and released when a schedule is superseded; they are advisory, not a real ERP posting.
+- Resource analysis "required" figures are the peak simultaneous demand if every job started as early as possible; the weekly capacity check then distinguishes a true deficit from a timing peak.

@@ -1,5 +1,12 @@
 # Changelog
 
+## Resource analysis and recommendations
+- New Resource Analysis screen: required vs available for machines, people and raw materials, with exact shortage quantities, the time window where each shortage bites, and per-resource verdicts that separate true deficits from timing peaks the planner can smooth out.
+- Raw-material inventory (simulated ERP): stock on hand per material, units-per-piece per product, reservations written when a schedule is approved after availability is revalidated at approval time, shortage alerts, and a stock-update action for the manager/ERP admin (audited).
+- AI recommended actions per shortage (schedule available machines, search other departments for verified skills, additional shift/overtime, outsourcing, material reservation/purchase). Advisory only: nothing is auto-applied, recommendations stay separate from approved allocations, and every manager decision is recorded.
+- Shortage diagnostics now classify missing skill vs material constraint alongside the existing due-date/overtime/horizon what-if tests.
+- Requirements checklist extended to FR-16/FR-17 with self-test evidence; 25 automated tests.
+
 ## Repair and guided demo
 - Fresh seed now produces a valid schedule (it was INFEASIBLE). Demo dates are relative to the next working day.
 - New scheduler: people and machines never overlap, maintenance is respected, certificates and leave are checked per day, jobs can use more than one person, daily and overtime limits hold. An independent check re-validates every plan.

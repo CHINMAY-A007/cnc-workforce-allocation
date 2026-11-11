@@ -121,7 +121,7 @@ def test_selftest_all_requirements_pass():
     from core import selftest
     res = selftest.run_all()
     bad = {k: v for k, v in res.items() if not v["ok"]}
-    assert len(res) == 15 and not bad, bad
+    assert len(res) == 17 and not bad, bad
 
 
 def _asg(c, vid):

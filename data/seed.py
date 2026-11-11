@@ -144,6 +144,24 @@ PRODUCTS = [
     ]),
 ]
 
+# simulated raw-material stock on hand (illustrative figures, not a real inventory).
+# Alloy Steel is deliberately short against ORD-1005 so the demo shows a material shortage.
+MATERIALS = [
+    ("Titanium", 120, "units"),
+    ("Aluminium", 300, "units"),
+    ("Stainless Steel", 200, "units"),
+    ("Brass", 150, "units"),
+    ("Alloy Steel", 20, "units"),
+]
+# material units consumed per piece, by product
+MATERIAL_PER_UNIT = {
+    "P-TITANIUM-SHAFT": 2,
+    "P-ALU-FLANGE": 1,
+    "P-SS-BRACKET": 1,
+    "P-BRASS-VALVE": 1,
+    "P-ALLOY-GEAR": 2,
+}
+
 # (id, product, qty, priority, due offset in days from the first planning day, status, customer)
 ORDERS = [
     ("ORD-1001", "P-TITANIUM-SHAFT", 12, "Urgent", 3, "Released", "Aero customer commitment"),
@@ -198,10 +216,13 @@ def seed(db_path=None, start=None):
                          (eid, cert, (hs + timedelta(days=off)).isoformat()))
     for wc in WORK_CENTERS:
         conn.execute("INSERT OR REPLACE INTO work_centers (id,name,kind,capacity) VALUES (?,?,?,1)", wc)
+    for mid, qty, unit in MATERIALS:
+        conn.execute("INSERT OR REPLACE INTO materials (id,on_hand,unit) VALUES (?,?,?)", (mid, qty, unit))
     for m in MAINTENANCE:
         conn.execute("INSERT INTO maintenance (work_center_id,start_slot,end_slot,reason) VALUES (?,?,?,?)", m)
     for pid, pname, material, ops in PRODUCTS:
         conn.execute("INSERT OR REPLACE INTO products (id,name,material) VALUES (?,?,?)", (pid, pname, material))
+        conn.execute("UPDATE products SET material_per_unit=? WHERE id=?", (MATERIAL_PER_UNIT.get(pid, 1), pid))
         for op in ops:
             seq, opname, kind, dur, setup, skill, level, role, mp, qg, deps = op
             conn.execute(

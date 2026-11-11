@@ -10,6 +10,7 @@ import tempfile
 from typing import Dict
 
 from core import service as S
+from core.audit import recent as audit_recent
 from core.config import SLOTS_PER_DAY, PRESETS
 from core.db import get_conn
 from core.eligibility import Context, task_candidates
@@ -156,6 +157,20 @@ def run_all() -> Dict[str, dict]:
         rep = build_report(db, vid)
         rec("FR-14", not rep.get("empty") and rep["people"] and rep["bottleneck"] and rep["planned_vs_actual"] and rep["on_time_pct"] is not None,
             f"Utilization for {len(rep.get('people', []))} people, overtime, bottleneck {rep.get('bottleneck', {}).get('id')}, on-time {rep.get('on_time_pct')}%, planned vs actual for {len(rep.get('planned_vs_actual', []))} tasks.")
-    for fr in [f"FR-{i:02d}" for i in range(1, 16)]:
+        # FR-16 / FR-17 resource analysis
+        from core.resources import resource_analysis
+        an = resource_analysis(db)
+        mats = {r["resource"]: r for r in an["rows"] if r["group"] == "materials"}
+        mach = [r for r in an["rows"] if r["group"] == "machines"]
+        ppl = [r for r in an["rows"] if r["group"] == "people"]
+        alloy = mats.get("Raw material: Alloy Steel", {})
+        timing = [r for r in mach + ppl if r["shortage"] and str(r.get("verdict", "")).startswith("timing peak")]
+        rec("FR-16", an["rows"] and mach and ppl and mats and alloy.get("status") == "short" and alloy.get("shortage") > 0 and timing and an["schedule_impact"]["orders"],
+            f"Quantity check plus schedule-aware check for {len(mach)} machine kinds, {len(ppl)} roles and {len(mats)} materials. "
+            f"Alloy Steel correctly short by {alloy.get('shortage'):g} units; {len(timing)} timing peak(s) distinguished from true deficits; schedule impact lists {len(an['schedule_impact']['orders'])} order estimates.")
+        rec("FR-17", an["recommendations"] and any(r["kind"] == "material" and r["severity"] == "critical" for r in an["recommendations"])
+            and any(a["action"] == "reserve_materials" for a in audit_recent(200, db)),
+            f"{len(an['recommendations'])} advisory recommendation set(s) generated (none auto-applied); approval wrote material reservations with an audit entry; shortage raised a critical alert.")
+    for fr in [f"FR-{i:02d}" for i in range(1, 18)]:
         out.setdefault(fr, {"ok": False, "evidence": "No check ran."})
     return out

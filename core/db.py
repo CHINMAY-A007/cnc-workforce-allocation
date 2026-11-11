@@ -61,6 +61,11 @@ CREATE TABLE IF NOT EXISTS products (
     name TEXT NOT NULL,
     material TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS materials (
+    id TEXT PRIMARY KEY,
+    on_hand REAL NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT 'units'
+);
 CREATE TABLE IF NOT EXISTS routing_ops (
     product_id TEXT NOT NULL,
     seq INTEGER NOT NULL,
@@ -193,6 +198,7 @@ MIGRATIONS = [
     ("schedule_versions", "parent_version_id", "TEXT"),
     ("schedule_versions", "label", "TEXT NOT NULL DEFAULT ''"),
     ("work_centers", "down", "INTEGER NOT NULL DEFAULT 0"),
+    ("products", "material_per_unit", "REAL NOT NULL DEFAULT 1"),
 ]
 
 

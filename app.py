@@ -25,6 +25,7 @@ from core.db import DB_PATH, get_conn, init_schema, is_seeded, reset_demo
 from core.eligibility import Context, skill_matrix, task_candidates
 from core.notes import note_reader_mode, parse_notes
 from core.reports import build_report
+from core.resources import resource_analysis, material_requirement
 from core.requirements import FR_TITLES
 from core.tasks import get_task, list_tasks, update_task_status
 from data.seed import seed
@@ -286,6 +287,54 @@ def api_parse_notes(text: str = ""):
     return parse_notes(text[:500])
 
 
+# ---------- resource analysis (AI Resource Analysis & Recommendations) ----------
+@app.get("/api/analysis")
+def api_analysis(order_id: str = None):
+    ids = [order_id] if order_id else None
+    if order_id:
+        conn = get_conn(DB)
+        ok = conn.execute("SELECT 1 FROM orders WHERE id=?", (order_id,)).fetchone()
+        conn.close()
+        if not ok:
+            raise S.ApiError("Unknown order.", 404)
+    return resource_analysis(DB, ids)
+
+
+@app.get("/api/materials")
+def api_materials():
+    conn = get_conn(DB)
+    rows = [dict(r) for r in conn.execute("SELECT * FROM materials ORDER BY id").fetchall()]
+    conn.close()
+    from core.resources import approved_reserved_materials
+    reserved = approved_reserved_materials(DB)
+    for r in rows:
+        r["reserved"] = float(reserved.get(r["id"], 0.0))
+        r["available"] = r["on_hand"] - r["reserved"]
+    return rows
+
+
+@app.post("/api/materials/{mid}")
+async def api_material_update(mid: str, request: Request):
+    role = need(request, "policy")
+    d = await body(request)
+    conn = get_conn(DB)
+    m = conn.execute("SELECT * FROM materials WHERE id=?", (mid,)).fetchone()
+    if not m:
+        conn.close()
+        raise S.ApiError("Unknown material.", 404)
+    try:
+        qty = float(d.get("on_hand"))
+        assert 0 <= qty <= 100000
+    except Exception:
+        conn.close()
+        raise S.ApiError("Stock on hand must be a number from 0 to 100000.")
+    conn.execute("UPDATE materials SET on_hand=? WHERE id=?", (qty, mid))
+    conn.commit()
+    conn.close()
+    log_action(role, role, "material_stock_update", mid, before=m["on_hand"], after=qty, reason=d.get("reason") or "ERP stock update", db_path=DB)
+    return {"ok": True}
+
+
 # ---------- planning ----------
 @app.post("/api/plan")
 async def api_plan(request: Request):
@@ -465,7 +514,7 @@ async def api_policy_set(request: Request):
 def api_export():
     conn = get_conn(DB)
     out = {}
-    for t in ("policy", "employees", "skills", "certs", "work_centers", "maintenance", "products", "routing_ops", "orders", "tasks",
+    for t in ("policy", "employees", "skills", "certs", "work_centers", "maintenance", "materials", "products", "routing_ops", "orders", "tasks",
               "schedule_versions", "version_assignments", "audit_log", "alerts"):
         out[t] = [dict(r) for r in conn.execute(f"SELECT * FROM {t}").fetchall()]
     conn.close()
