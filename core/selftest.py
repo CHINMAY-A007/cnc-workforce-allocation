@@ -122,7 +122,9 @@ def run_all() -> Dict[str, dict]:
         rec("FR-15", why_ok and {"reassign", "lock", "approve_schedule"} <= acts and all(a["actor"] and a["ts"] for a in audit),
             f"Every assignment has a 'Why this person?' text with alternatives; audit log holds who/when/why for {len(audit)} actions ({', '.join(sorted(acts))}).")
         # FR-12 replan
-        ev_id = next(a for a in S.enrich(db, vid)["assignments"] if not a["locked"])["employee_ids"][0]
+        _ass = S.enrich(db, vid)["assignments"]
+        _locked_emps = {e for a in _ass if a["locked"] for e in a["employee_ids"]}
+        ev_id = next(a for a in _ass if not a["locked"] and not any(e in _locked_emps for e in a["employee_ids"]))["employee_ids"][0]
         r = S.replan(db, R, R, {"type": "absence", "employee_id": ev_id, "days": 2, "from_day": 0})
         moved_ok = r.get("result") == "proposed" and not [v for v in r["detail"]["violations"]] and all(
             ev_id not in a["employee_ids"] or a["start_slot"] // SLOTS_PER_DAY >= 2 for a in r["detail"]["assignments"])
