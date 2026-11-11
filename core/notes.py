@@ -43,10 +43,14 @@ KNOWN_CERTS = {
     "Deburring Cert", "Packing Cert",
 }
 
-# Current free-tier Flash model. gemini-3.8-flash is served through the Interactions API:
-# the legacy :generateContent endpoint 404s for retired model IDs and 503s for this one,
-# while the AI Studio "Get code" snippet and the API reference both use /v1beta/interactions.
-GEMINI_MODEL = "gemini-3.8-flash"
+# Free-tier text model, verified live on 2026-11-12. gemini-3.8-flash is demand-gated on the
+# free tier: identical calls returned HTTP 503 "high demand" within seconds from two different
+# networks, while gemini-3.5-flash-lite and gemini-3.1-flash-lite answered the app's real
+# prompts with valid JSON in seconds (both free-tier 15 RPM). The model is overridable via the
+# GEMINI_MODEL env var. All models here are served through the Interactions API: the legacy
+# :generateContent endpoint 404s for retired model IDs, while the AI Studio "Get code" snippet
+# and the API reference both use /v1beta/interactions.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
 _UNKNOWN_PREFIX = "Not recognized, please confirm: "
@@ -144,8 +148,8 @@ def gemini_generate(prompt: str) -> str | None:
         r = httpx.post(
             GEMINI_URL,
             headers={"x-goog-api-key": key},
-            # This model is intrinsically slow (UI takes 30-90s on a trivial prompt),
-            # so the timeout is generous; the explanation is 120-180 words.
+            # The verified model answers in seconds; the timeout stays generous so a
+            # temporary demand spike falls back cleanly instead of erroring the page.
             json={"model": GEMINI_MODEL, "input": prompt,
                   "generation_config": {"max_output_tokens": 4096, "thinking_level": "medium"}},
             timeout=180.0,
