@@ -300,6 +300,21 @@ def api_analysis(order_id: str = None):
     return resource_analysis(DB, ids)
 
 
+@app.get("/api/analysis/explanation")
+def api_analysis_explanation(order_id: str = None):
+    """Plain-language explanation of the validated analysis (Gemini when enabled, rules otherwise).
+    A separate endpoint so viewing the dashboard never burns an AI call; the manager asks for it."""
+    ids = [order_id] if order_id else None
+    if order_id:
+        conn = get_conn(DB)
+        ok = conn.execute("SELECT 1 FROM orders WHERE id=?", (order_id,)).fetchone()
+        conn.close()
+        if not ok:
+            raise S.ApiError("Unknown order.", 404)
+    from core.ai_explain import explain_analysis
+    return explain_analysis(resource_analysis(DB, ids))
+
+
 @app.get("/api/materials")
 def api_materials():
     conn = get_conn(DB)

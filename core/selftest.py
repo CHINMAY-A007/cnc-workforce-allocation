@@ -173,6 +173,20 @@ def run_all() -> Dict[str, dict]:
         rec("FR-17", an["recommendations"] and any(r["kind"] == "material" and r["severity"] == "critical" for r in an["recommendations"])
             and any(a["action"] == "reserve_materials" for a in audit_recent(200, db)),
             f"{len(an['recommendations'])} advisory recommendation set(s) generated (none auto-applied); approval wrote material reservations with an audit entry; shortage raised a critical alert.")
-    for fr in [f"FR-{i:02d}" for i in range(1, 18)]:
+        # FR-18 plain-language explanation + dynamic-input proof
+        from core.ai_explain import explain_analysis
+        ex = explain_analysis(an)
+        before = {r["resource"]: r["required"] for r in an["rows"] if r["group"] == "materials"}
+        dyn = S.create_order(db, R, R, {"product_id": "P-TITANIUM-SHAFT", "quantity": 7, "priority": "Normal",
+                                        "due_date": ctx.day(5).isoformat(), "notes": "certified inspector"})
+        an2 = resource_analysis(db)
+        after = {r["resource"]: r["required"] for r in an2["rows"] if r["group"] == "materials"}
+        delta = {k.split(": ")[-1]: after.get(k, 0) - before.get(k, 0) for k in after if after.get(k, 0) != before.get(k, 0)}
+        dyn_ok = any(v > 0 for v in delta.values())
+        S.delete_order(db, R, R, dyn["order_id"])
+        rec("FR-18", ex["text"] and ex["source"] in ("gemini", "rule-based") and dyn_ok,
+            f"Explanation written by {ex['source']} from the validated results only (never decides allocations). "
+            f"Dynamic check: a new 7-piece order changed material requirements by {delta}; nothing is hard-coded from the spec's example figures.")
+    for fr in [f"FR-{i:02d}" for i in range(1, 19)]:  
         out.setdefault(fr, {"ok": False, "evidence": "No check ran."})
     return out

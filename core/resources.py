@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from core.config import SLOTS_PER_DAY, SLOTS_PER_HOUR, fmt_slot, shift_slots
+from core.config import SLOTS_PER_DAY, SLOTS_PER_HOUR, fmt_slot, is_working_day, shift_slots
 from core.db import get_conn
 from core.eligibility import Context, check_employee
 from core.tasks import list_tasks
@@ -223,7 +223,7 @@ def resource_analysis(db, order_ids: Optional[List[str]] = None) -> Dict[str, An
             for ms, me, r in ctx.maint.get(w["id"], []):
                 reasons.append(f"{w['id']}: {r} ({fmt_slot(ms, ctx.hs)} - {fmt_slot(me, ctx.hs)})")
         row = {"group": "machines", "resource": f"{kind} machines", "required": required,
-               "available": available, "shortage": short,
+               "available": available, "shortage": short, "operation": mach_peak.get(kind, {}).get("task"),
                "status": "short" if short else "sufficient",
                "window": {"start": fmt_slot(win[0], ctx.hs), "end": fmt_slot(win[1], ctx.hs)} if win else None,
                "free_at_peak": free_at_peak,
@@ -252,6 +252,7 @@ def resource_analysis(db, order_ids: Optional[List[str]] = None) -> Dict[str, An
 
     # --- people ---
     roles_needed = sorted({t["required_role"] for t in tasks})
+    eligible_by_role: Dict[str, List[str]] = {}
     for role in roles_needed:
         peak = role_peak.get(role, {}).get("peak", 0)
         win = role_peak.get(role, {}).get("window")
@@ -274,6 +275,7 @@ def resource_analysis(db, order_ids: Optional[List[str]] = None) -> Dict[str, An
                 if win and any(s < win[1] and e2 > win[0] for s, e2 in busy_emp.get(e["id"], [])):
                     continue
                 eligible.append(e["id"])
+        eligible_by_role[role] = list(eligible)
         required = peak
         available = len(eligible)
         short = max(0, required - available)
@@ -299,7 +301,7 @@ def resource_analysis(db, order_ids: Optional[List[str]] = None) -> Dict[str, An
             why = rs[0] if rs else ("already booked at the busiest moment" if win else "unavailable")
             excl.append(f"{e['name']}: {why}")
         row = {"group": "people", "resource": role, "required": required, "available": available,
-               "shortage": short, "status": "short" if short else "sufficient",
+               "shortage": short, "operation": role_peak.get(role, {}).get("task"), "status": "short" if short else "sufficient",
                "window": {"start": fmt_slot(win[0], ctx.hs), "end": fmt_slot(win[1], ctx.hs)} if win else None,
                "eligible_names": [ctx.emps[e]["name"] for e in eligible],
                "weekly": {"demand_hours": round(demand_slots / SLOTS_PER_HOUR, 1), "capacity_hours": round(cap_slots / SLOTS_PER_HOUR, 1), "covers": capacity_ok},
@@ -334,22 +336,54 @@ def resource_analysis(db, order_ids: Optional[List[str]] = None) -> Dict[str, An
         res = float(reserved.get(m["material"], 0.0))
         avail = m["on_hand"] - res
         short = max(0.0, m["required"] - avail)
+        over = max(0.0, res - m["on_hand"])
         rows.append({"group": "materials", "resource": f"Raw material: {m['material']}",
                      "verdict": ("true deficit: stock plus current reservations cannot cover these orders" if max(0.0, m["required"] - (m["on_hand"] - res)) > 0 else "sufficient stock"),
-                     "required": m["required"], "available": avail, "on_hand": m["on_hand"],
-                     "reserved": res, "shortage": short, "unit": m["unit"],
+                     "required": m["required"], "available": max(0.0, avail), "on_hand": m["on_hand"],
+                     "reserved": res, "over_reserved": over, "shortage": short, "unit": m["unit"],
                      "status": "short" if short > 0 else "sufficient",
-                     "detail": f"{m['on_hand']:g} {m['unit']} on hand, {res:g} already reserved by the approved schedule",
+                     "detail": (f"{m['on_hand']:g} {m['unit']} on hand, {res:g} already reserved by the approved schedule" +
+                                (f"; reservations exceed stock by {over:g}" if over > 0 else "")),
                      "reasons": []})
         if short > 0:
             recommendations.append({"kind": "material", "severity": "critical", "resource": m["material"],
-                                    "actions": [f"Only {avail:g} of {m['required']:g} {m['unit']} available after existing reservations: {short:g} short.",
+                                    "actions": [f"Only {max(0.0, avail):g} of {m['required']:g} {m['unit']} available after existing reservations: {short:g} short.",
                                                 "Reserve the available quantity now and raise a purchase request for the missing quantity through the ERP workflow before approving production."]})
         else:
             recommendations.append({"kind": "material", "severity": "info", "resource": m["material"],
                                     "actions": [f"No shortage. Confirm material quality and reserve {m['required']:g} {m['unit']} through the approved ERP workflow (reservation is written when a schedule covering these orders is approved)."]})
 
     conn.close()
+
+    # --- manager dashboard: available resources (eligible people and machines, hours, shifts, capacity) ---
+    work_days = [d for d in range(int(ctx.policy["horizon_days"])) if is_working_day(ctx.day(d), ctx.policy)]
+    shift_hours_day = sum(e - s for s, e in (shift_slots(s, ctx.policy) for s in ctx.policy["shifts"])) / SLOTS_PER_HOUR
+    avail_people = []
+    for role in roles_needed:
+        for e in ctx.emps.values():
+            if e["role"] != role or not e["active"]:
+                continue
+            free_days = sum(1 for d in work_days if ctx.day(d).isoformat() not in e["leave"])
+            daily = min(float(e["max_daily_hours"]) + float(e["overtime_cap_hours"]), float(ctx.policy["max_daily_hours_cap"]))
+            week_hours = free_days * daily
+            booked_hours = sum(en - st for st, en in busy_emp.get(e["id"], [])) / SLOTS_PER_HOUR
+            avail_people.append({"name": e["name"], "role": role, "shift": e["shift"],
+                                 "week_hours": round(week_hours, 1), "booked_hours": round(booked_hours, 1),
+                                 "free_hours": round(max(0.0, week_hours - booked_hours), 1),
+                                 "eligible": e["id"] in eligible_by_role.get(role, [])})
+    avail_machines = []
+    for kind in sorted({t["work_center_kind"] for t in tasks}):
+        for w in ctx.wcs.values():
+            if w["kind"] != kind:
+                continue
+            maint_slots = sum(me - ms for ms, me, _r in ctx.maint.get(w["id"], []))
+            cap_hours = 0.0 if w["down"] else len(work_days) * shift_hours_day - maint_slots / SLOTS_PER_HOUR
+            booked_hours = sum(en - st for st, en in busy_wc.get(w["id"], [])) / SLOTS_PER_HOUR
+            maint_txt = "; ".join(r for _s, _e, r in ctx.maint.get(w["id"], []))
+            avail_machines.append({"id": w["id"], "kind": kind, "status": "down" if w["down"] else "up",
+                                   "capacity_hours": round(max(0.0, cap_hours), 1), "booked_hours": round(booked_hours, 1),
+                                   "free_hours": round(max(0.0, cap_hours - booked_hours), 1), "maintenance": maint_txt})
+    available_resources = {"people": avail_people, "machines": avail_machines}
 
     true_deficits = [r for r in rows if r["shortage"] and str(r.get("verdict", "")).startswith("true deficit")]
     timing_peaks = [r for r in rows if r["shortage"] and not str(r.get("verdict", "")).startswith("true deficit")]
@@ -361,10 +395,24 @@ def resource_analysis(db, order_ids: Optional[List[str]] = None) -> Dict[str, An
     if vid:
         det = enrich(db, vid)
         impact = {"version": vid, "status": det["version"]["status"],
-                  "orders": det["orders"],
+                  "orders": det["orders"], "other_jobs": None,
                   "note": "Predicted completion per order from the latest " + det["version"]["status"] + " schedule."}
+        # impact on other scheduled jobs: what approving this draft would change in the approved plan
+        appr = latest_version_id(db, "approved")
+        if det["version"]["status"] == "draft" and appr and appr != vid:
+            from core.service import diff_versions
+            d = diff_versions(db, appr, vid)
+            changed = len(d["moved"]) + len(d["shifted"])
+            txt = (f"Impact on other scheduled jobs: approving this draft changes {changed} job(s) in the current approved plan; "
+                   f"{d['unchanged']} stay exactly as they are.")
+            if d["delivery_impact"]:
+                txt += " Delivery change: " + "; ".join(
+                    f"{x['order_id']} {x['before_status']} -> {x['after_status']} (finishes {x['after']})" for x in d["delivery_impact"][:4]) + "."
+            impact["other_jobs"] = {"changed": changed, "unchanged": d["unchanged"],
+                                    "delivery_impact": d["delivery_impact"], "text": txt}
     else:
         impact["note"] = "No schedule yet. Generate one on the AI Allocation Proposal screen to see the recalculated delivery dates."
+        impact["other_jobs"] = None
 
     return {
         "scope": {"orders": sel, "order_count": len(sel), "task_count": len(tasks)},
@@ -378,6 +426,7 @@ def resource_analysis(db, order_ids: Optional[List[str]] = None) -> Dict[str, An
                      "Every required machine, person and material is available for the selected orders.")),
         "rows": rows,
         "recommendations": recommendations,
+        "available_resources": available_resources,
         "schedule_impact": impact,
         "method": ("Quantity check: required minus available eligible quantity. Schedule-aware check: existing approved bookings, "
                    "maintenance windows, leave and shift rules reduce what is free at the busiest moment. A job is never called feasible "

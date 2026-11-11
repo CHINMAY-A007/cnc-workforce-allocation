@@ -230,13 +230,23 @@ PAGES.resources = async (p) => {
   <p style="margin:10px 0 0"><b>${esc(a.summary)}</b></p></div>
 
   <div class="card"><h2>1. Resource availability analysis</h2><p class="muted" style="margin-top:0">${esc(a.method)}</p><div class="tw"><table><thead><tr><th>Resource</th><th>Required</th><th>Available</th><th>Shortage / status</th><th>When it bites</th><th>Reading</th></tr></thead><tbody>
-  ${a.rows.map((r) => `<tr><td><b>${esc(r.resource)}</b><br><span class="muted" style="font-size:13px">${esc(GROUP[r.group])} &middot; ${esc(r.detail || "")}</span></td><td>${r.required}</td><td>${r.available}${r.group === "materials" ? ` <span class="muted">(${r.on_hand} on hand${r.reserved ? `, ${r.reserved} reserved` : ""})</span>` : ""}</td><td>${stBadge(r)}</td><td class="nowrap">${r.window ? esc(r.window.start) + " to " + esc(r.window.end) : "-"}</td><td style="font-size:14px">${esc(r.verdict || "")}${r.reasons && r.reasons.length ? `<br><span class="muted">${r.reasons.slice(0, 4).map(esc).join("; ")}</span>` : ""}</td></tr>`).join("")}
+  ${a.rows.map((r) => `<tr><td><b>${esc(r.resource)}</b><br><span class="muted" style="font-size:13px">${esc(GROUP[r.group])} &middot; ${esc(r.detail || "")}</span></td><td>${r.required}</td><td>${r.available}${r.group === "materials" ? ` <span class="muted">(${r.on_hand} on hand${r.reserved ? `, ${r.reserved} reserved` : ""})</span>` : ""}</td><td>${stBadge(r)}</td><td class="nowrap">${r.window ? esc(r.window.start) + " to " + esc(r.window.end) : "-"}${r.operation ? `<br><span class="muted">Affected operation: ${esc(r.operation)}</span>` : ""}</td><td style="font-size:14px">${esc(r.verdict || "")}${r.reasons && r.reasons.length ? `<br><span class="muted">${r.reasons.slice(0, 4).map(esc).join("; ")}</span>` : ""}</td></tr>`).join("")}
   </tbody></table></div></div>
+
+  <div class="card"><h2>Available resources (this planning week)</h2><p class="muted" style="margin-top:0">Eligible employees and machines for the selected orders, with their shifts, capacity and hours already booked by the approved schedule.</p>
+  ${a.available_resources.people.length ? `<h3>People</h3><div class="tw"><table><thead><tr><th>Person</th><th>Role</th><th>Shift</th><th>Hours this week</th><th>Already booked</th><th>Free</th><th>Eligible for the work</th></tr></thead><tbody>
+  ${a.available_resources.people.map((x) => `<tr><td><b>${esc(x.name)}</b></td><td>${esc(x.role)}</td><td>${esc(x.shift)}</td><td>${x.week_hours} h</td><td>${x.booked_hours} h</td><td>${x.free_hours} h</td><td>${x.eligible ? chip("green", "eligible") : chip("grey", "not eligible")}</td></tr>`).join("")}</tbody></table></div>` : ""}
+  ${a.available_resources.machines.length ? `<h3>Machines</h3><div class="tw"><table><thead><tr><th>Machine</th><th>Type</th><th>Status</th><th>Capacity this week</th><th>Already booked</th><th>Free</th><th>Maintenance</th></tr></thead><tbody>
+  ${a.available_resources.machines.map((x) => `<tr><td><b>${esc(x.id)}</b></td><td>${esc(x.kind)}</td><td>${x.status === "down" ? chip("red", "down") : chip("green", "up")}</td><td>${x.capacity_hours} h</td><td>${x.booked_hours} h</td><td>${x.free_hours} h</td><td>${esc(x.maintenance || "-")}</td></tr>`).join("")}</tbody></table></div>` : ""}</div>
+
+  <div class="card" id="aix"><h2>AI explanation of these results</h2><p class="muted" style="margin-top:0">The app hands the validated solver and analysis results to the explainer, which puts them in plain language. It never decides allocations or changes a number. When Gemini is enabled it writes the explanation; otherwise the built-in rule-based writer produces it from the same numbers.</p>
+  <button class="primary" id="aixb">Explain these results in plain language</button> <span class="muted" id="aixs"></span><div id="aixr" style="margin-top:10px"></div></div>
 
   <div class="card"><h2>2. AI recommended actions</h2><p class="muted" style="margin-top:0">Recommendations only. Nothing below is applied or booked by itself; the manager approves a schedule, and only then are people, machines and material reserved. Every decision is recorded in the audit log.</p>
   ${a.recommendations.length ? a.recommendations.map((r) => `<div class="note ${r.severity === "critical" ? "bad" : r.severity === "warning" ? "warn" : "info"}"><b>${esc(r.resource)}</b><ul style="margin:6px 0 0">${r.actions.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`).join("") : '<p class="muted">No recommendations needed for the selected orders.</p>'}</div>
 
   <div class="card"><h2>3. Schedule impact</h2><p class="muted" style="margin-top:0">${esc(a.schedule_impact.note)}</p>
+  ${a.schedule_impact.other_jobs ? `<p class="note info">${esc(a.schedule_impact.other_jobs.text)}</p>` : ""}
   ${a.schedule_impact.orders.length ? `<div class="row">${a.schedule_impact.orders.map((o) => `<div class="ocard ${o.status}"><b>${esc(o.order_id)}</b> ${prio(o.priority)}<br>${badge(o.status)}<br>Finishes <b>${esc(o.finish_text)}</b><br><span class="muted">Due ${esc(fmtDate(o.due_date))}${o.hours_late ? ` &middot; ${o.hours_late} h late` : ""}</span></div>`).join("")}</div>` : ""}
   <div style="margin-top:10px"><button class="primary" onclick="go('plan')">Recalculate the schedule</button> <button onclick="go('approval')">Go to approval</button></div></div>
 
@@ -244,6 +254,12 @@ PAGES.resources = async (p) => {
   ${mats.map((m) => `<tr><td><b>${esc(m.id)}</b></td><td>${m.on_hand} ${esc(m.unit)}</td><td>${m.reserved}</td><td>${m.available}</td>${canEditStock ? `<td><button class="sm" data-m="${esc(m.id)}" data-q="${m.on_hand}">Update stock</button></td>` : ""}</tr>`).join("")}
   </tbody></table></div><p class="muted">Reservations are written when a schedule is approved, after availability is revalidated at approval time. Illustrative figures.</p></div>`;
   $("#ra_o").onchange = (e) => { ST.arg = e.target.value || null; render(); };
+  $("#aixb").onclick = () => guard(async () => {
+    $("#aixs").textContent = "Asking the explainer...";
+    const x = await get("/api/analysis/explanation" + (sel ? "?order_id=" + encodeURIComponent(sel) : ""));
+    $("#aixs").textContent = "";
+    $("#aixr").innerHTML = `<div class="note ${x.source === "gemini" ? "good" : "info"}">${esc(x.text)}<br><span class="muted">${esc(x.label)} Source: ${x.source === "gemini" ? "Gemini AI" : "rule-based writer"}.</span></div>`;
+  });
   p.querySelectorAll("[data-m]").forEach((b) => (b.onclick = () => guard(async () => {
     modal(`<h2>Update stock: ${esc(b.dataset.m)}</h2><label class="f">New quantity on hand<input id="msq" type="number" min="0" step="1" value="${esc(b.dataset.q)}"></label><button class="primary" id="msok">Save</button> <button id="msno">Cancel</button>`);
     $("#msno").onclick = closeModal;

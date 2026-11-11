@@ -119,10 +119,36 @@ def _build_summary(skills, certs, notes) -> str:
     return "We read your note and added: " + ", ".join(parts) + "."
 
 
-def _gemini_parse(text: str) -> Dict | None:
+def gemini_generate(prompt: str) -> str | None:
+    """One Gemini call, shared by every AI feature (note reader, result explainer).
+
+    Runs only when the owner explicitly enabled Gemini (GEMINI_ENABLED=1 plus a key),
+    never more than GEMINI_MAX_CALLS times per server run across all features, so a
+    visitor cannot run up usage. Returns the model's text, or None on any failure
+    (disabled, cap reached, network, quota, auth) so callers fall back to rules.
+    The key is read from the environment and never logged or returned.
+    """
+    global _gemini_calls
+    if not gemini_enabled() or _gemini_calls >= GEMINI_MAX_CALLS:
+        return None
+    _gemini_calls += 1
     key = _resolve_key()
     if not key:
         return None
+    try:
+        r = httpx.post(
+            GEMINI_URL,
+            params={"key": key},
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=20.0,
+        )
+        r.raise_for_status()
+        return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception:
+        return None
+
+
+def _gemini_parse(text: str) -> Dict | None:
     prompt = (
         "Extract structured requirements from these CNC manufacturing order notes. "
         "Return ONLY a JSON object (no markdown, no code fences) with keys: "
@@ -136,16 +162,10 @@ def _gemini_parse(text: str) -> Dict | None:
         "Do not invent new skill or cert names. If unsure, put the phrase in rejected.\n"
         "Notes: " + (text or "")
     )
+    raw = gemini_generate(prompt)
+    if raw is None:
+        return None
     try:
-        r = httpx.post(
-            GEMINI_URL,
-            params={"key": key},
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=20.0,
-        )
-        r.raise_for_status()
-        data = r.json()
-        raw = data["candidates"][0]["content"]["parts"][0]["text"]
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.strip("`")
@@ -158,7 +178,7 @@ def _gemini_parse(text: str) -> Dict | None:
             raw = raw.strip()
         parsed = json.loads(raw)
     except Exception:
-        # Any failure (network, quota, auth, bad JSON) -> fall back to keyword reader.
+        # Bad JSON -> fall back to the keyword reader.
         return None
 
     skills, certs, notes, rejected = _validate_lists(
@@ -252,11 +272,9 @@ def parse_notes(text: str, use_llm: bool = True) -> Dict[str, List[str]]:
     only for short notes, and never more than GEMINI_MAX_CALLS times per server run, so a
     visitor cannot run up usage. Any failure falls back to the keyword reader.
     """
-    global _gemini_calls
     text = (text or "")[:500]
     notice = ""
-    if use_llm and gemini_enabled() and _gemini_calls < GEMINI_MAX_CALLS:
-        _gemini_calls += 1
+    if use_llm and gemini_enabled():
         res = _gemini_parse(text)
         if res is not None:
             return res

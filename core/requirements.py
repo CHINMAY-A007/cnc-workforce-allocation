@@ -23,4 +23,5 @@ FR_TITLES = {
     "FR-15": ("Explanations and audit trail", "audit"),
     "FR-16": ("Resource availability analysis and shortages", "resources"),
     "FR-17": ("AI recommended actions and material reservation", "resources"),
+    "FR-18": ("Plain-language explanation of results (Gemini when enabled)", "resources"),
 }

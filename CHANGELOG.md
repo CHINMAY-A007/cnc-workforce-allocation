@@ -1,5 +1,12 @@
 # Changelog
 
+## Full resource-analysis spec compliance
+- Manager dashboard completed per spec: a new Available resources section lists eligible employees (shift, weekly hours, booked/free) and machines (status, weekly capacity, booked/free, maintenance); shortage rows now name the affected operation; Schedule impact also states what approving the latest draft would change in the current approved plan (jobs changed vs unchanged, delivery changes).
+- AI explanation (spec section 5): a new "Explain these results" action on the Resource Analysis screen hands the validated solver/analysis results to Gemini (when enabled) for a plain-language explanation, with an identical rule-based fallback; the response always labels its source. The LLM never decides allocations and never sees anything but validated results. New endpoint GET /api/analysis/explanation.
+- Gemini calls (note reader + explainer) share one hard cap per server run (GEMINI_MAX_CALLS, default 25) and run only with GEMINI_ENABLED=1 plus a key.
+- Raw-material rows no longer show a negative "available" when reservations exceed stock; they show 0 available plus the over-reserved quantity.
+- FR-18 added (plain-language explanation, dynamic-input proof); self-test now covers 18 requirements; 30 automated tests, including dynamic checks that new orders change the computed requirements.
+
 ## Resource analysis and recommendations
 - New Resource Analysis screen: required vs available for machines, people and raw materials, with exact shortage quantities, the time window where each shortage bites, and per-resource verdicts that separate true deficits from timing peaks the planner can smooth out.
 - Raw-material inventory (simulated ERP): stock on hand per material, units-per-piece per product, reservations written when a schedule is approved after availability is revalidated at approval time, shortage alerts, and a stock-update action for the manager/ERP admin (audited).
