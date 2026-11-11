@@ -144,11 +144,11 @@ def gemini_generate(prompt: str) -> str | None:
         r = httpx.post(
             GEMINI_URL,
             headers={"x-goog-api-key": key},
-            # Low thinking + capped output keep the call well under a minute; the parse
-            # answer is a small JSON object and the explanation is 120-180 words.
+            # This model is intrinsically slow (UI takes 30-90s on a trivial prompt),
+            # so the timeout is generous; the explanation is 120-180 words.
             json={"model": GEMINI_MODEL, "input": prompt,
-                  "generation_config": {"max_output_tokens": 2048, "thinking_level": "low"}},
-            timeout=110.0,
+                  "generation_config": {"max_output_tokens": 4096, "thinking_level": "medium"}},
+            timeout=180.0,
         )
         r.raise_for_status()
         # Interaction resource: text lives in the model_output step's content blocks.
@@ -168,17 +168,15 @@ def gemini_generate(prompt: str) -> str | None:
 
 
 def _gemini_parse(text: str) -> Dict | None:
+    # Short prompt: known-value enforcement lives in _validate_lists, not the prompt,
+    # because long enumeration prompts push this model past the HTTP timeout.
     prompt = (
-        "Extract structured requirements from these CNC manufacturing order notes. "
+        "Extract requirements from these CNC manufacturing order notes. "
         "Return ONLY a JSON object (no markdown, no code fences) with keys: "
-        "required_skills, required_certifications, special_notes, rejected.\n"
-        "required_skills: array of strings, each MUST be one of these exact values or empty: "
-        + json.dumps(sorted(KNOWN_SKILLS)) + "\n"
-        "required_certifications: array of strings, each MUST be one of these exact values or empty: "
-        + json.dumps(sorted(KNOWN_CERTS)) + "\n"
-        "special_notes: array of other requirement phrases that are not skills/certs.\n"
-        "rejected: array of phrases that matched nothing known.\n"
-        "Do not invent new skill or cert names. If unsure, put the phrase in rejected.\n"
+        "required_skills (array of machining skill names found, copied exactly as written), "
+        "required_certifications (array of certification names found, copied exactly), "
+        "special_notes (array of other requirement phrases), "
+        "rejected (array of phrases that are not a skill, cert or requirement).\n"
         "Notes: " + (text or "")
     )
     raw = gemini_generate(prompt)
