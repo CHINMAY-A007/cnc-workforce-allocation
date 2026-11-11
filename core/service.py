@@ -544,7 +544,7 @@ def replan(db, actor, role, event: dict) -> dict:
         only = None
         if typ == "delay":
             only = [dict(t, duration_min=t["duration_min"] + ev["minutes"]) if t["id"] == event["task_id"] else t for t in load_tasks(order_ids, db)]
-        return solve(db, order_ids, c2.policy, pinned=pinned, ctx=c2, time_limit_sec=8, only_tasks=only, prev_assign={k: v for k, v in base_asg.items()})
+        return solve(db, order_ids, c2.policy, pinned=pinned, ctx=c2, only_tasks=only, prev_assign={k: v for k, v in base_asg.items()}, time_limit_sec=30)
 
     res = run(0)
     widened = False
