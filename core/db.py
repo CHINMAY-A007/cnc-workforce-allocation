@@ -171,6 +171,10 @@ CREATE TABLE IF NOT EXISTS alerts (
     read INTEGER NOT NULL DEFAULT 0,
     link TEXT
 );
+CREATE TABLE IF NOT EXISTS gemini_usage (
+    day TEXT PRIMARY KEY,
+    calls INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS requirements_evidence (
     fr_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,

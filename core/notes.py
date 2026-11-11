@@ -43,9 +43,11 @@ KNOWN_CERTS = {
     "Deburring Cert", "Packing Cert",
 }
 
-# Current free-tier Flash model (availability confirmed in AI Studio model picker and live test).
+# Current free-tier Flash model. gemini-3.8-flash is served through the Interactions API:
+# the legacy :generateContent endpoint 404s for retired model IDs and 503s for this one,
+# while the AI Studio "Get code" snippet and the API reference both use /v1beta/interactions.
 GEMINI_MODEL = "gemini-3.8-flash"
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
 _UNKNOWN_PREFIX = "Not recognized, please confirm: "
 
@@ -131,6 +133,9 @@ def gemini_generate(prompt: str) -> str | None:
     global _gemini_calls
     if not gemini_enabled() or _gemini_calls >= GEMINI_MAX_CALLS:
         return None
+    if not _daily_quota_ok():
+        print("[gemini] daily call cap reached; using fallback until tomorrow")
+        return None
     _gemini_calls += 1
     key = _resolve_key()
     if not key:
@@ -138,12 +143,20 @@ def gemini_generate(prompt: str) -> str | None:
     try:
         r = httpx.post(
             GEMINI_URL,
-            params={"key": key},
-            json={"contents": [{"parts": [{"text": prompt}]}]},
+            headers={"x-goog-api-key": key},
+            json={"model": GEMINI_MODEL, "input": prompt},
             timeout=60.0,
         )
         r.raise_for_status()
-        return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        # Interaction resource: text lives in the model_output step's content blocks.
+        for step in reversed(r.json().get("steps") or []):
+            if step.get("type") == "model_output":
+                text = "".join(
+                    c.get("text", "") for c in (step.get("content") or []) if c.get("type") == "text"
+                ).strip()
+                if text:
+                    return text
+        return None
     except Exception as e:
         # diagnostics only: exception class and HTTP status, never the key or body
         status = getattr(getattr(e, "response", None), "status_code", None)
@@ -254,7 +267,47 @@ def _keyword_parse(text: str) -> Dict[str, List[str]]:
 
 
 GEMINI_MAX_CALLS = int(os.environ.get("GEMINI_MAX_CALLS", "25"))  # hard cap per server run
+GEMINI_DAILY_MAX = int(os.environ.get("GEMINI_DAILY_MAX", "50"))  # persistent cap per local day
 _gemini_calls = 0
+
+
+def _daily_quota_ok() -> bool:
+    """Persistent daily Gemini call cap, stored in the demo DB.
+
+    The per-process cap (GEMINI_MAX_CALLS) resets every time Render restarts the service,
+    so on its own it cannot stop a public visitor from repeatedly burning the free-tier
+    quota across restarts. This counter survives restarts. It is incremented before the
+    API call so a failing key cannot be hammered either. If the counter store itself is
+    unavailable the call is refused (fail-closed): every feature has a rule-based fallback.
+    """
+    try:
+        from core.config import today_local
+        from core.db import get_conn
+
+        day = today_local().isoformat()
+        conn = get_conn()
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS gemini_usage ("
+                "day TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0)"
+            )
+            conn.execute(
+                "INSERT INTO gemini_usage (day, calls) VALUES (?, 0) "
+                "ON CONFLICT(day) DO NOTHING",
+                (day,),
+            )
+            row = conn.execute("SELECT calls FROM gemini_usage WHERE day = ?", (day,)).fetchone()
+            if row is None or row["calls"] >= GEMINI_DAILY_MAX:
+                conn.commit()
+                return False
+            conn.execute("UPDATE gemini_usage SET calls = calls + 1 WHERE day = ?", (day,))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[gemini] daily cap store unavailable ({type(e).__name__}); refusing call")
+        return False
 
 
 def gemini_enabled() -> bool:
