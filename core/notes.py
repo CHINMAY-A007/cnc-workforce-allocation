@@ -43,8 +43,8 @@ KNOWN_CERTS = {
     "Deburring Cert", "Packing Cert",
 }
 
-# Current fast Gemini model (availability confirmed on generativelanguage.googleapis.com).
-GEMINI_MODEL = "gemini-2.5-flash"
+# Current free-tier Flash model (availability confirmed in AI Studio model picker and live test).
+GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 _UNKNOWN_PREFIX = "Not recognized, please confirm: "
