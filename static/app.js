@@ -93,7 +93,7 @@ function drawBanner() {
 
 /* ---------- demo script panel ---------- */
 const SCRIPT = [
-  ["Show the orders", "orders", "Open Orders and Tasks. Point out the five sample orders and their task counts.", "\"An order arrives from the ERP. The app has already split each one into the real jobs from the product's routing.\""],
+  ["Show the orders", "orders", "Open Orders and Tasks. Point out the six sample orders and their task counts.", "\"An order arrives from the ERP. The app has already split each one into the real jobs from the product's routing.\""],
   ["Add an urgent order", "orders", "Press 'Fill the demo example', then Create order.", "\"The manager types a note. The reader picks out titanium and a certified inspector. Anything it does not recognise is shown, never silently applied.\""],
   ["See who qualifies", "orders", "On any task press 'Who can do this?'.", "\"Only people with the right skill, valid certificate, shift and no leave qualify. The others are listed with the reason. Nobody can override this.\""],
   ["Generate the schedule", "plan", "Pick a priority style and press Generate schedule.", "\"The planner assigns a person and a machine to every job and estimates when each order finishes.\""],
@@ -113,7 +113,7 @@ function drawGuide() {
 PAGES.home = async (p) => {
   const s = ST.state;
   const steps = [
-    { t: "Look at the incoming orders", d: "Five sample orders from the simulated ERP. Each is already broken into jobs.", done: s.orders > 0 && s.tasks > 0, btn: "Open orders", page: "orders" },
+    { t: "Look at the incoming orders", d: "Six sample orders from the simulated ERP. Each is already broken into jobs.", done: s.orders > 0 && s.tasks > 0, btn: "Open orders", page: "orders" },
     { t: "Add an urgent order", d: "Type a note such as 'Needs titanium, certified inspector only'. The app adds those requirements and creates the jobs.", done: false, optional: true, btn: "Add an order", page: "orders", arg: "new" },
     { t: "Generate the AI schedule", d: "One button. The planner picks a person and a machine for every job and says why.", done: !!s.latest_version, btn: "Generate schedule", page: "plan" },
     { t: "Review and approve", d: "Change one assignment (with a reason), lock jobs you do not want touched, then approve.", done: !!s.approved_version, btn: "Review and approve", page: "approval" },
