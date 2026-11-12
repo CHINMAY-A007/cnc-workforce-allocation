@@ -46,7 +46,7 @@ def run_all() -> Dict[str, dict]:
                                          "due_date": ctx.day(4).isoformat(), "notes": "Needs titanium, certified inspector only, surface finish N6, blue unicorn paint"})
         ptasks = list_tasks(new["order_id"], db)
         parsed = new["parsed_notes"] or {}
-        rec("FR-01", n_orders == 5 and blank_ok and new["order_id"], f"{n_orders} orders loaded; blank due date refused; new order {new['order_id']} accepted.")
+        rec("FR-01", n_orders == 6 and blank_ok and new["order_id"], f"{n_orders} orders loaded; blank due date refused; new order {new['order_id']} accepted.")
         qg = [t for t in ptasks if t["required_cert"]]
         rec("FR-02", n_tasks >= 30 and len(ptasks) >= 7 and bool(qg) and any(t["extra_skill"] for t in ptasks) and "blue unicorn paint" in " ".join(parsed.get("rejected", [])),
             f"{n_tasks} tasks auto-created from routings; the new order got {len(ptasks)} tasks with dependencies; note reader added Titanium Machining + certified inspector; unknown phrase rejected, not applied.")
@@ -55,7 +55,7 @@ def run_all() -> Dict[str, dict]:
         from core.eligibility import skill_matrix
         m = skill_matrix(db)
         states = {c["state"] for e in m["employees"] for c in e["certs"]}
-        rec("FR-03", len(m["employees"]) == 18 and {"expired", "expiring soon"} <= states, f"18 employees x {len(m['skills'])} skills; certificate states found: {', '.join(sorted(states))}.")
+        rec("FR-03", len(m["employees"]) == 20 and {"expired", "expiring soon"} <= states, f"20 employees x {len(m['skills'])} skills; certificate states found: {', '.join(sorted(states))}.")
         t1 = next(t for t in list_tasks(None, db) if t["id"] == "ORD-1001-T02")
         c = task_candidates(t1, ctx.day(0), ctx)
         reasons = [r for e in c["excluded"] for r in e["reasons"]]
@@ -71,7 +71,7 @@ def run_all() -> Dict[str, dict]:
         has_maint = any(a["work_center_id"] == "VMC-2" for a in res.get("assignments", []))
         no_overlap = not any("maintenance" in v or "double booking" in v for v in viol)
         rec("FR-05", ok_plan and no_overlap, f"One job per machine at a time and no work during planned maintenance (VMC-2 {'used' if has_maint else 'unused'}, never during its downtime).")
-        rec("FR-07", ok_plan and len(res.get("orders", [])) == 5 and all("status" in o for o in res["orders"]),
+        rec("FR-07", ok_plan and len(res.get("orders", [])) == 6 and all("status" in o for o in res["orders"]),
             "Per-order finish estimate with on time / at risk / late: " + ", ".join(f"{o['order_id']} {o['status']}" for o in res.get("orders", [])))
         why_ok = all(a.get("why", {}).get("summary") for a in res.get("assignments", []))
         # FR-09 presets

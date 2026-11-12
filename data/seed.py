@@ -27,6 +27,8 @@ SKILLS = [
     "Deburring",
     "Packing",
     "Titanium Machining",
+    "EDM",
+    "Saw",
 ]
 
 ROLES = [
@@ -38,6 +40,8 @@ ROLES = [
     "Finishing Worker",
     "Packer",
     "Shift Supervisor",
+    "EDM Operator",
+    "Saw Operator",
 ]
 
 # (id, name, role, team, shift, max_daily, ot_cap, active, leave_dates)
@@ -60,6 +64,9 @@ EMPLOYEES = [
     ("E16", "Isha Kapoor", "Packer", "Dispatch", "B", 8, 2, True, []),
     ("E17", "Deepak Rao", "Shift Supervisor", "Supervision", "A", 8, 0, True, []),
     ("E18", "Meera Shah", "Shift Supervisor", "Supervision", "B", 8, 0, True, []),
+    # Copper worked example (client walkthrough): an EDM operator and a saw operator.
+    ("E19", "Suresh Patil", "EDM Operator", "EDM", "A", 8, 2, True, []),
+    ("E20", "Ramesh Sawant", "Saw Operator", "Saw", "A", 8, 2, True, []),
 ]
 
 # skill levels: dict employee -> {skill: level}
@@ -82,6 +89,8 @@ SKILL_LEVELS = {
     "E16": {"Packing": 4, "Deburring": 2},
     "E17": {"Setup": 3, "CNC Turning": 2, "VMC Milling": 2},
     "E18": {"Setup": 3, "Packing": 2},
+    "E19": {"EDM": 4},
+    "E20": {"Saw": 4},
 }
 
 # certs: employee -> list (cert, expires_on)
@@ -94,6 +103,8 @@ WORK_CENTERS = [
     ("FIN-1", "Deburr and Finishing Bench", "Finishing"),
     ("QC-1", "CMM Inspection Station", "Inspection"),
     ("PK-1", "Packing and Dispatch Bay", "Packing"),
+    ("SAW-1", "Bandsaw 1", "Saw"),
+    ("EDM-1", "Wire EDM 1", "EDM"),
 ]
 
 # maintenance: (wc, start_slot, end_slot, reason) using day2 (index 1) 4 hours
@@ -134,6 +145,11 @@ PRODUCTS = [
         (5, "CMM Inspection", "Inspection", 12, 2, "CMM Inspection", 3, "Quality Inspector", 1, True, [4]),
         (6, "Packing", "Packing", 6, 1, "Packing", 2, "Packer", 1, False, [5]),
     ]),
+    ("P-COPPER-ELECTRODE", "Copper Electrode", "Copper", [
+        (1, "Cutting", "Saw", 30, 0, "Saw", 2, "Saw Operator", 1, False, []),
+        (2, "Wire EDM", "EDM", 45, 0, "EDM", 3, "EDM Operator", 1, False, [1]),
+        (3, "QC Check", "Inspection", 15, 0, "CMM Inspection", 2, "Quality Inspector", 1, True, [2]),
+    ]),
     ("P-ALLOY-GEAR", "Alloy Gear Blank", "Alloy Steel", [
         (1, "Material Cutting", "Turning", 12, 3, "CNC Turning", 3, "CNC Turning Operator", 1, False, []),
         (2, "CNC Turning", "Turning", 22, 5, "CNC Turning", 4, "CNC Turning Operator", 1, False, [1]),
@@ -146,12 +162,15 @@ PRODUCTS = [
 
 # simulated raw-material stock on hand (illustrative figures, not a real inventory).
 # Alloy Steel is deliberately short against ORD-1005 so the demo shows a material shortage.
+# Copper is deliberately short against ORD-1006 (20 x 3 kg = 60 kg needed, 40 on hand):
+# the standard client walkthrough, always present after every seed/reset.
 MATERIALS = [
     ("Titanium", 120, "units"),
     ("Aluminium", 300, "units"),
     ("Stainless Steel", 200, "units"),
     ("Brass", 150, "units"),
     ("Alloy Steel", 20, "units"),
+    ("Copper", 40, "kg"),
 ]
 # material units consumed per piece, by product
 MATERIAL_PER_UNIT = {
@@ -160,6 +179,7 @@ MATERIAL_PER_UNIT = {
     "P-SS-BRACKET": 1,
     "P-BRASS-VALVE": 1,
     "P-ALLOY-GEAR": 2,
+    "P-COPPER-ELECTRODE": 3,
 }
 
 # (id, product, qty, priority, due offset in days from the first planning day, status, customer)
@@ -169,6 +189,7 @@ ORDERS = [
     ("ORD-1003", "P-SS-BRACKET", 25, "Normal", 5, "Released", "General engineering"),
     ("ORD-1004", "P-BRASS-VALVE", 60, "Normal", 2, "Released", "Valve OEM"),
     ("ORD-1005", "P-ALLOY-GEAR", 15, "High", 6, "Released", "Gearbox supplier"),
+    ("ORD-1006", "P-COPPER-ELECTRODE", 20, "Urgent", 1, "Released", "Electrode customer, firm date"),
 ]
 
 # certificate expiry as days from the first planning day (negative = already expired)

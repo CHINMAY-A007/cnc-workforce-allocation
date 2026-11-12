@@ -15,7 +15,7 @@ def plan_and_approve(c):
 
 def test_analysis_shape_and_groups(client):
     a = client.get("/api/analysis").json()
-    assert a["rows"] and a["scope"]["order_count"] == 5
+    assert a["rows"] and a["scope"]["order_count"] == 6
     groups = {r["group"] for r in a["rows"]}
     assert groups == {"machines", "people", "materials"}
     for r in a["rows"]:
